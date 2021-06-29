@@ -1,4 +1,4 @@
-use blackbox::{Grid, Point};
+use lightbox::{Grid, Point};
 use std::io;
 use std::io::prelude::*;
 

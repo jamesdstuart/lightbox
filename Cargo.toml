@@ -1,5 +1,5 @@
 [package]
-name = "blackbox"
+name = "lightbox"
 version = "0.1.0"
 authors = ["jds"]
 edition = "2018"
