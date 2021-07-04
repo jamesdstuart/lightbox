@@ -7,10 +7,10 @@ pub struct Grid {
     edge_bottom: EdgeRow,
     edge_left: EdgeRow,
     edge_right: EdgeRow,
-    guesses : Vec<bool>,
-    guess_balls : usize,
-    possible_solution : Vec<bool>,
-    solution_ball_count : usize,
+    guesses: Vec<bool>,
+    guess_balls: usize,
+    possible_solution: Vec<bool>,
+    solution_ball_count: usize,
 }
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -27,11 +27,20 @@ enum Deflection {
     Through(BeamId),
 }
 
+#[derive(Debug, PartialEq)]
 enum Side {
     Top = 0,
     Left = 1,
     Right = 2,
     Bottom = 3,
+}
+
+#[derive(Debug, PartialEq)]
+enum Beam {
+    HeadOn,
+    Edge(Coord, Direction),
+    Through(Coord, Direction),
+    Reflect,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -47,7 +56,7 @@ pub enum GridError {
     TooBig,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct Point(pub usize, pub usize);
 
 #[derive(Debug)]
@@ -77,7 +86,17 @@ impl std::str::FromStr for Point {
     }
 }
 
+#[derive(PartialEq, Debug, Eq, Copy, Clone)]
 struct Coord(isize, isize);
+
+impl Coord {
+    fn top(col: isize) -> Coord {
+        Coord(-1, col)
+    }
+    fn left(row: isize) -> Coord {
+        Coord(row, -1)
+    }
+}
 
 impl std::ops::Add<Coord> for Coord {
     type Output = Coord;
@@ -104,18 +123,31 @@ impl std::convert::TryFrom<Coord> for Point {
     }
 }
 
-const UP : Coord = Coord(-1, 0);
-const DOWN : Coord = Coord(1, 0);
-const LEFT : Coord = Coord(0, -1);
-const RIGHT : Coord = Coord(0, 1);
+type Direction = Coord;
+
+impl Direction {
+    const UP: Coord = Coord(-1, 0);
+    const DOWN: Coord = Coord(1, 0);
+    const LEFT: Coord = Coord(0, -1);
+    const RIGHT: Coord = Coord(0, 1);
+
+    fn get_sides(&self) -> (Direction, Direction) {
+        match *self {
+            Direction::LEFT => (Direction::DOWN, Direction::UP),
+            Direction::RIGHT => (Direction::UP, Direction::DOWN),
+            Direction::UP => (Direction::LEFT, Direction::RIGHT),
+            Direction::DOWN => (Direction::RIGHT, Direction::LEFT),
+            _ => (Coord(0, 0), Coord(0, 0)),
+        }
+    }
+}
 
 impl Grid {
-
-    const MAX_SIZE : usize = 20;
+    const MAX_SIZE: usize = 20;
 
     pub fn new(size: usize) -> Result<Grid, GridError> {
         if size > Grid::MAX_SIZE {
-            return Err(GridError::TooBig)
+            return Err(GridError::TooBig);
         }
         Ok(Grid {
             size,
@@ -130,9 +162,17 @@ impl Grid {
         })
     }
 
+    fn point_inside_grid(&self, p: &Point) -> bool {
+        p.0 < self.size && p.1 < self.size
+    }
+
+    fn coord_inside_grid(&self, c: &Coord) -> bool {
+        c.0 >= 0 && c.0 < self.size as isize && c.1 >= 0 && c.1 < self.size as isize
+    }
+
     fn add_ball(&mut self, p: Point, t: BallType) -> Result<(), GridError> {
         let i = self.point_to_index(p).ok_or(GridError::BadCoordinates)?;
-        let (v,c) = match t {
+        let (v, c) = match t {
             BallType::Solution => (&mut self.possible_solution, &mut self.solution_ball_count),
             BallType::Guess => (&mut self.guesses, &mut self.guess_balls),
         };
@@ -160,29 +200,56 @@ impl Grid {
         self.fmt_grid(BallType::Guess, f)
     }
 
-    fn edge_step(&self, start: Coord, t: BallType) -> Result<Coord, GridError> {
+    fn edge_step(&self, start: Coord, t: BallType) -> Result<Beam, GridError> {
         let dir = match start {
             // top edge
-            Coord(-1, _) => DOWN,
+            Coord(-1, _) => Direction::DOWN,
             // left edge
-            Coord(_, -1) => RIGHT,
+            Coord(_, -1) => Direction::RIGHT,
             // right edge
-            Coord(_, y) if y == self.size as isize => LEFT,
+            Coord(_, y) if y == self.size as isize => Direction::LEFT,
             // bottom edge
-            Coord(x, _) if x == self.size as isize => UP,
+            Coord(x, _) if x == self.size as isize => Direction::UP,
             // unknown edge
             _ => return Err(GridError::BadCoordinates),
         };
+        let (sideLeft, sideRight) = dir.get_sides();
         // check cell in front
-        if self.is_ball((start + dir).try_into().or(Err(GridError::BadCoordinates))?, t).ok_or(GridError::BadCoordinates)? {
+        // should always be a cell in front, error if not
+        if self
+            .is_ball(
+                (start + dir)
+                    .try_into()
+                    .or(Err(GridError::BadCoordinates))?,
+                t,
+            )
+            .ok_or(GridError::BadCoordinates)?
+        {
             // head on
+            return Ok(Beam::HeadOn);
         }
-        Ok(Coord(0,0))
+        // check cell left
+        // there may not be one, so check if cell exists and a ball is there
+        let cellLeft = start + dir + sideLeft;
+        if self.coord_inside_grid(&cellLeft)
+            && self.is_ball(cellLeft.try_into().or(Err(GridError::BadCoordinates))?, t)
+                == Some(true)
+        {
+            return Ok(Beam::Reflect);
+        }
+        // check cell right
+        // there may not be one, so check if cell exists and a ball is there
+        let cellRight = start + dir + sideRight;
+        if self.coord_inside_grid(&cellRight)
+            && self.is_ball(cellRight.try_into().or(Err(GridError::BadCoordinates))?, t)
+                == Some(true)
+        {
+            return Ok(Beam::Reflect);
+        }
+        Ok(Beam::Through(start + dir, dir))
     }
 
-    fn next_step(&self, start: Point, dir: Coord, t: BallType) {
-
-    }
+    fn next_step(&self, start: Point, dir: Coord, t: BallType) {}
 
     fn fmt_grid(&self, t: BallType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_edge_row(&self.edge_top, f)?;
@@ -193,7 +260,7 @@ impl Grid {
     }
 
     fn point_to_index(&self, p: Point) -> Option<usize> {
-        if p.0 < self.size && p.1 < self.size {
+        if self.point_inside_grid(&p) {
             Some(p.0 * self.size + p.1)
         } else {
             None
@@ -208,7 +275,12 @@ impl Grid {
         }
     }
 
-    fn format_row(&self, row: usize, t: BallType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn format_row(
+        &self,
+        row: usize,
+        t: BallType,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
         write!(f, "{}", self.edge_left[row])?;
         for cell in 0..self.size {
             if self.is_ball(Point(row, cell), t) == Some(true) {
@@ -265,34 +337,102 @@ mod tests {
 
     #[test]
     fn coord_into_point() {
-        assert_eq!(Point::try_from(Coord(2,3)), Ok(Point(2,3)));
-        assert_eq!(Point::try_from(Coord(0,0)), Ok(Point(0,0)));
-        assert_eq!(Point::try_from(Coord(0,2)), Ok(Point(0,2)));
-        assert_eq!(Point::try_from(Coord(1,0)), Ok(Point(1,0)));
-        assert_eq!(Point::try_from(Coord(-1,3)), Err(()));
-        assert_eq!(Point::try_from(Coord(1,-2)), Err(()));
-        assert_eq!(Point::try_from(Coord(-3,-4)), Err(()));
+        assert_eq!(Point::try_from(Coord(2, 3)), Ok(Point(2, 3)));
+        assert_eq!(Point::try_from(Coord(0, 0)), Ok(Point(0, 0)));
+        assert_eq!(Point::try_from(Coord(0, 2)), Ok(Point(0, 2)));
+        assert_eq!(Point::try_from(Coord(1, 0)), Ok(Point(1, 0)));
+        assert_eq!(Point::try_from(Coord(-1, 3)), Err(()));
+        assert_eq!(Point::try_from(Coord(1, -2)), Err(()));
+        assert_eq!(Point::try_from(Coord(-3, -4)), Err(()));
     }
 
     #[test]
-    fn point_into_coord() {
-
-    }
+    fn point_into_coord() {}
 
     #[test]
-    fn parse_point(){
-
-    }
+    fn parse_point() {}
 
     #[test]
-    fn ball_adding_guess() {
-
-    }
+    fn ball_adding_guess() {}
 
     #[test]
-    fn ball_adding_solution() {
+    fn ball_adding_solution() {}
 
+    #[test]
+    fn edge_step_1() {
+        // define a 3x3 grid, with 2 balls, and expected edges
+        //       R   H   R
+        //     +-----------+
+        //  H  |   | O |   | H
+        //  1  |   |   |   | R
+        //  H  |   |   | O | H
+        //     +-----------+
+        //       1   R   H
+        // we test each of the 12 edge entry points, to ensure the correct next step is identified
+
+        // grid drawn with just the *next step* along the edges
+        //        R   H   R
+        //      +-----------+
+        //  T>  |   | O |   | T<
+        //  T>  |   |   |   | R
+        //  T>  |   |   | O | H
+        //      +-----------+
+        //        T^  R   H
+
+        let mut g = Grid::new(3).unwrap();
+        g.add_ball_solution(Point(0, 1)).unwrap();
+        g.add_ball_solution(Point(2, 2)).unwrap();
+        // go along top edge, left to right
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.edge_step(Coord::top(0), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.edge_step(Coord::top(1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.edge_step(Coord::top(2), BallType::Solution)
+        );
+        // left edge
+        assert_eq!(
+            Ok(Beam::Through(Coord(0, 0), Direction::RIGHT)),
+            g.edge_step(Coord::left(0), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 0), Direction::RIGHT)),
+            g.edge_step(Coord::left(1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(2, 0), Direction::RIGHT)),
+            g.edge_step(Coord::left(2), BallType::Solution)
+        );
+        // right edge
+        assert_eq!(
+            Ok(Beam::Through(Coord(0, 2), Direction::LEFT)),
+            g.edge_step(Coord(0, 3), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.edge_step(Coord(1, 3), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.edge_step(Coord(2, 3), BallType::Solution)
+        );
+        // bottom edge
+        assert_eq!(
+            Ok(Beam::Through(Coord(2, 0), Direction::UP)),
+            g.edge_step(Coord(3, 0), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.edge_step(Coord(3, 1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.edge_step(Coord(3, 2), BallType::Solution)
+        );
     }
-
-
 }
