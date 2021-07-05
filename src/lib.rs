@@ -59,7 +59,7 @@ pub enum GridError {
 #[derive(Debug, PartialEq, Copy, Clone)]
 pub struct Point(pub usize, pub usize);
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ParsePointError {
     ParseIntError(std::num::ParseIntError),
     ImproperFormat,
@@ -81,7 +81,7 @@ impl std::str::FromStr for Point {
             return Err(ParsePointError::ImproperFormat);
         }
         let x = coords[0].parse::<usize>()?;
-        let y = coords[0].parse::<usize>()?;
+        let y = coords[1].parse::<usize>()?;
         Ok(Point(x, y))
     }
 }
@@ -334,6 +334,7 @@ mod tests {
 
     use super::*;
     use std::convert::TryFrom;
+    use std::str::FromStr;
 
     #[test]
     fn coord_into_point() {
@@ -347,10 +348,32 @@ mod tests {
     }
 
     #[test]
-    fn point_into_coord() {}
+    fn point_into_coord() {
+        assert_eq!(Coord::from(Point(0,0)), Coord(0,0));
+        assert_eq!(Coord::from(Point(0,2)), Coord(0,2));
+        assert_eq!(Coord::from(Point(3,0)), Coord(3,0));
+        assert_eq!(Coord::from(Point(5,7)), Coord(5,7));
+    }
 
     #[test]
-    fn parse_point() {}
+    fn parse_point() {
+        assert_eq!(Ok(Point(1,2)), Point::from_str("1 2"));
+        assert_eq!(Err(ParsePointError::ImproperFormat), Point::from_str("1"));
+        assert_eq!(Err(ParsePointError::ImproperFormat), Point::from_str("1,2"));
+        // assert_eq!(Err(ParsePointError::ParseIntError(_)), Point::from_str("a b"));
+        match Point::from_str("a b") {
+            Err(ParsePointError::ParseIntError(_)) => {},
+            x => panic!("expected ParseIntError, got {:?}", x),
+        }
+        match Point::from_str("1 b") {
+            Err(ParsePointError::ParseIntError(_)) => {},
+            x => panic!("expected ParseIntError, got {:?}", x),
+        }
+        match Point::from_str("a 2") {
+            Err(ParsePointError::ParseIntError(_)) => {},
+            x => panic!("expected ParseIntError, got {:?}", x),
+        }
+    }
 
     #[test]
     fn ball_adding_guess() {}
