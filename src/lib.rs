@@ -140,6 +140,21 @@ impl Direction {
             _ => (Coord(0, 0), Coord(0, 0)),
         }
     }
+
+    fn get_side_coords(&self, front: Coord) -> (Coord, Coord) {
+        let (dirLeft, dirRight) = self.get_sides();
+        (front + dirLeft, front + dirRight)
+    }
+
+    fn reflect(self) -> Direction {
+        match self {
+            Direction::UP => Direction::DOWN,
+            Direction::LEFT => Direction::RIGHT,
+            Direction::RIGHT => Direction::LEFT,
+            Direction::DOWN => Direction::UP,
+            _ => Coord(0, 0),
+        }
+    }
 }
 
 impl Grid {
@@ -200,6 +215,15 @@ impl Grid {
         self.fmt_grid(BallType::Guess, f)
     }
 
+    fn at_edge(&self, c: Coord) -> bool {
+        match c {
+            Coord(-1, _) | Coord(_, -1) => true,
+            Coord(_, y) if y == self.size as isize => true,
+            Coord(x, _) if x == self.size as isize => true,
+            _ => false,
+        }
+    }
+
     fn edge_step(&self, start: Coord, t: BallType) -> Result<Beam, GridError> {
         let dir = match start {
             // top edge
@@ -213,7 +237,7 @@ impl Grid {
             // unknown edge
             _ => return Err(GridError::BadCoordinates),
         };
-        let (sideLeft, sideRight) = dir.get_sides();
+        let (side_left, side_right) = dir.get_sides();
         // check cell in front
         // should always be a cell in front, error if not
         if self
@@ -230,18 +254,18 @@ impl Grid {
         }
         // check cell left
         // there may not be one, so check if cell exists and a ball is there
-        let cellLeft = start + dir + sideLeft;
-        if self.coord_inside_grid(&cellLeft)
-            && self.is_ball(cellLeft.try_into().or(Err(GridError::BadCoordinates))?, t)
+        let cell_left = start + dir + side_left;
+        if self.coord_inside_grid(&cell_left)
+            && self.is_ball(cell_left.try_into().or(Err(GridError::BadCoordinates))?, t)
                 == Some(true)
         {
             return Ok(Beam::Reflect);
         }
         // check cell right
         // there may not be one, so check if cell exists and a ball is there
-        let cellRight = start + dir + sideRight;
-        if self.coord_inside_grid(&cellRight)
-            && self.is_ball(cellRight.try_into().or(Err(GridError::BadCoordinates))?, t)
+        let cell_right = start + dir + side_right;
+        if self.coord_inside_grid(&cell_right)
+            && self.is_ball(cell_right.try_into().or(Err(GridError::BadCoordinates))?, t)
                 == Some(true)
         {
             return Ok(Beam::Reflect);
@@ -249,7 +273,63 @@ impl Grid {
         Ok(Beam::Through(start + dir, dir))
     }
 
-    fn next_step(&self, start: Point, dir: Coord, t: BallType) {}
+    fn next_step(&self, start: Point, dir: Coord, t: BallType) -> Result<Beam, GridError> {
+        let start: Coord = start.into();
+        // check front
+        let front = start + dir;
+
+        // if we're at an edge, we've passed through
+        if self.at_edge(front) {
+            return Ok(Beam::Edge(front, dir));
+        }
+        // if there is a ball
+        if self
+            .is_ball(front.try_into().or(Err(GridError::BadCoordinates))?, t)
+            .ok_or(GridError::BadCoordinates)?
+        {
+            // return head on
+            return Ok(Beam::HeadOn);
+        }
+
+        // check left and right for reflection
+        let (side_left, side_right) = dir.get_sides();
+        let (left, right) = dir.get_side_coords(front);
+        let left_edge = self.at_edge(left);
+        let right_edge = self.at_edge(right);
+
+        let left_ball = if !left_edge {
+            self.is_ball(left.try_into().or(Err(GridError::BadCoordinates))?, t)
+                .ok_or(GridError::BadCoordinates)?
+        } else {
+            false
+        };
+
+        let right_ball = if !right_edge {
+            self.is_ball(right.try_into().or(Err(GridError::BadCoordinates))?, t)
+                .ok_or(GridError::BadCoordinates)?
+        } else {
+            false
+        };
+
+        // if both, reflect
+        if left_ball && right_ball {
+            // return swapped direction
+            return Ok(Beam::Through(start, dir.reflect()));
+        }
+
+        // check left
+        if left_ball {
+            // turn right
+            return Ok(Beam::Through(start, side_right));
+        }
+
+        if right_ball {
+            return Ok(Beam::Through(start, side_left));
+        }
+
+        // continue 1 step forward
+        Ok(Beam::Through(start + dir, dir))
+    }
 
     fn fmt_grid(&self, t: BallType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_edge_row(&self.edge_top, f)?;
@@ -349,37 +429,33 @@ mod tests {
 
     #[test]
     fn point_into_coord() {
-        assert_eq!(Coord::from(Point(0,0)), Coord(0,0));
-        assert_eq!(Coord::from(Point(0,2)), Coord(0,2));
-        assert_eq!(Coord::from(Point(3,0)), Coord(3,0));
-        assert_eq!(Coord::from(Point(5,7)), Coord(5,7));
+        assert_eq!(Coord::from(Point(0, 0)), Coord(0, 0));
+        assert_eq!(Coord::from(Point(0, 2)), Coord(0, 2));
+        assert_eq!(Coord::from(Point(3, 0)), Coord(3, 0));
+        assert_eq!(Coord::from(Point(5, 7)), Coord(5, 7));
     }
 
     #[test]
     fn parse_point() {
-        assert_eq!(Ok(Point(1,2)), Point::from_str("1 2"));
+        assert_eq!(Ok(Point(1, 2)), Point::from_str("1 2"));
         assert_eq!(Err(ParsePointError::ImproperFormat), Point::from_str("1"));
         assert_eq!(Err(ParsePointError::ImproperFormat), Point::from_str("1,2"));
-        // assert_eq!(Err(ParsePointError::ParseIntError(_)), Point::from_str("a b"));
         match Point::from_str("a b") {
-            Err(ParsePointError::ParseIntError(_)) => {},
+            Err(ParsePointError::ParseIntError(_)) => {}
             x => panic!("expected ParseIntError, got {:?}", x),
         }
         match Point::from_str("1 b") {
-            Err(ParsePointError::ParseIntError(_)) => {},
+            Err(ParsePointError::ParseIntError(_)) => {}
             x => panic!("expected ParseIntError, got {:?}", x),
         }
         match Point::from_str("a 2") {
-            Err(ParsePointError::ParseIntError(_)) => {},
+            Err(ParsePointError::ParseIntError(_)) => {}
             x => panic!("expected ParseIntError, got {:?}", x),
         }
     }
 
     #[test]
-    fn ball_adding_guess() {}
-
-    #[test]
-    fn ball_adding_solution() {}
+    fn ball_adding() {}
 
     #[test]
     fn edge_step_1() {
@@ -456,6 +532,134 @@ mod tests {
         assert_eq!(
             Ok(Beam::HeadOn),
             g.edge_step(Coord(3, 2), BallType::Solution)
+        );
+    }
+
+    #[test]
+    fn next_step_1() {
+        // define a 3x3 grid, with 2 balls, and expected edges
+        //       R   H   R
+        //     +-----------+
+        //  H  |   | O |   | H
+        //  1  |   |   |   | R
+        //  H  |   |   | O | H
+        //     +-----------+
+        //       1   R   H
+
+        let mut g = Grid::new(3).unwrap();
+        g.add_ball_solution(Point(0, 1)).unwrap();
+        g.add_ball_solution(Point(2, 2)).unwrap();
+
+        // start top, left cell.
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.next_step(Point(0, 0), Direction::RIGHT, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(-1, 0), Direction::UP)),
+            g.next_step(Point(0, 0), Direction::UP, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 0), Direction::DOWN)),
+            g.next_step(Point(0, 0), Direction::DOWN, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(0, -1), Direction::LEFT)),
+            g.next_step(Point(0, 0), Direction::LEFT, BallType::Solution)
+        );
+
+        // left, middle cell
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 0), Direction::DOWN)),
+            g.next_step(Point(1, 0), Direction::RIGHT, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 0), Direction::LEFT)),
+            g.next_step(Point(1, 0), Direction::UP, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(2, 0), Direction::DOWN)),
+            g.next_step(Point(1, 0), Direction::DOWN, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(1, -1), Direction::LEFT)),
+            g.next_step(Point(1, 0), Direction::LEFT, BallType::Solution)
+        );
+
+        // left bottom cell
+        assert_eq!(
+            Ok(Beam::Through(Coord(2, 1), Direction::RIGHT)),
+            g.next_step(Point(2, 0), Direction::RIGHT, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 0), Direction::UP)),
+            g.next_step(Point(2, 0), Direction::UP, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(3, 0), Direction::DOWN)),
+            g.next_step(Point(2, 0), Direction::DOWN, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(2, -1), Direction::LEFT)),
+            g.next_step(Point(2, 0), Direction::LEFT, BallType::Solution)
+        );
+
+        // middle centre cell
+        // left and right directions aren't specified - shouldn't get into that situation
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.next_step(Point(1, 1), Direction::UP, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 1), Direction::LEFT)),
+            g.next_step(Point(1, 1), Direction::DOWN, BallType::Solution)
+        );
+
+        // centre bottom cell
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.next_step(Point(2, 1), Direction::RIGHT, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 1), Direction::UP)),
+            g.next_step(Point(2, 1), Direction::UP, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(3, 1), Direction::DOWN)),
+            g.next_step(Point(2, 1), Direction::DOWN, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(2, 0), Direction::LEFT)),
+            g.next_step(Point(2, 1), Direction::LEFT, BallType::Solution)
+        );
+
+        // right top cell
+        assert_eq!(
+            Ok(Beam::Edge(Coord(0, 3), Direction::RIGHT)),
+            g.next_step(Point(0, 2), Direction::RIGHT, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(-1, 2), Direction::UP)),
+            g.next_step(Point(0, 2), Direction::UP, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 2), Direction::DOWN)),
+            g.next_step(Point(0, 2), Direction::DOWN, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.next_step(Point(0, 2), Direction::LEFT, BallType::Solution)
+        );
+
+        // right middle cell
+        // left and right directions aren't specified - shouldn't get into that situation
+        assert_eq!(
+            Ok(Beam::Through(Coord(1, 2), Direction::RIGHT)),
+            g.next_step(Point(1, 2), Direction::UP, BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.next_step(Point(1, 2), Direction::DOWN, BallType::Solution)
         );
     }
 }
