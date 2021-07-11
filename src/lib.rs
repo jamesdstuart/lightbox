@@ -1,3 +1,4 @@
+use std::convert::TryFrom;
 use std::convert::TryInto;
 
 #[derive(Debug)]
@@ -54,6 +55,7 @@ pub enum GridError {
     BadCoordinates,
     DuplicateBall,
     TooBig,
+    SomethingWentWrong,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -95,6 +97,39 @@ impl Coord {
     }
     fn left(row: isize) -> Coord {
         Coord(row, -1)
+    }
+}
+
+struct Edges {
+    size: usize,
+    count: usize,
+}
+
+impl Edges {
+    fn new(size: usize) -> Edges {
+        Edges { size, count: 0 }
+    }
+}
+
+impl Iterator for Edges {
+    type Item = Coord;
+    fn next(&mut self) -> Option<Self::Item> {
+        let i = (self.count % self.size) as isize;
+        let r = match self.count {
+            // top edge
+            c if c < 1 * self.size => Some(Coord(-1, i)),
+            // left edge
+            c if c < 2 * self.size => Some(Coord(i, -1)),
+            // right edge
+            c if c < 3 * self.size => Some(Coord(i, self.size as isize)),
+            // bottom edge
+            c if c < 4 * self.size => Some(Coord(self.size as isize, i)),
+            _ => None,
+        };
+        if r != None {
+            self.count += 1;
+        }
+        return r;
     }
 }
 
@@ -175,6 +210,10 @@ impl Grid {
             guess_balls: 0,
             solution_ball_count: 0,
         })
+    }
+
+    fn edges(&self) -> Edges {
+        Edges::new(self.size)
     }
 
     fn point_inside_grid(&self, p: &Point) -> bool {
@@ -371,6 +410,112 @@ impl Grid {
         }
         write!(f, "{}\n", self.edge_right[row])
     }
+
+    fn get_edge(&self, edge: Coord) -> Result<Deflection, GridError> {
+        if !self.at_edge(edge) {
+            return Err(GridError::BadCoordinates);
+        }
+        let (edge_row, index) = match edge {
+            Coord(-1, i) => (&self.edge_top, i),
+            // left edge
+            Coord(i, -1) => (&self.edge_left, i),
+            // right edge
+            Coord(i, y) if y == self.size as isize => (&self.edge_right, i),
+            // bottom edge
+            Coord(x, i) if x == self.size as isize => (&self.edge_bottom, i),
+            _ => return Err(GridError::BadCoordinates),
+        };
+        if index < 0 || index > self.size as isize {
+            return Err(GridError::BadCoordinates);
+        };
+        let index: usize = index as usize;
+        Ok(edge_row[index])
+    }
+
+    fn set_edge(&mut self, edge: Coord, value: Deflection) -> Result<(), GridError> {
+        if !self.at_edge(edge) {
+            return Err(GridError::BadCoordinates);
+        }
+        let (edge_row, index) = match edge {
+            Coord(-1, i) => (&mut self.edge_top, i),
+            // left edge
+            Coord(i, -1) => (&mut self.edge_left, i),
+            // right edge
+            Coord(i, y) if y == self.size as isize => (&mut self.edge_right, i),
+            // bottom edge
+            Coord(x, i) if x == self.size as isize => (&mut self.edge_bottom, i),
+            _ => return Err(GridError::BadCoordinates),
+        };
+        if index < 0 || index > self.size as isize {
+            return Err(GridError::BadCoordinates);
+        };
+        let index: usize = index as usize;
+        edge_row[index] = value;
+        Ok(())
+    }
+
+    fn walk_from_edge(&mut self, start: Coord, t: BallType) -> Result<Beam, GridError> {
+        let r = self.edge_step(start, t)?;
+        let (mut next, mut dir) = match r {
+            Beam::HeadOn => return Ok(Beam::HeadOn),
+            Beam::Reflect => return Ok(Beam::Reflect),
+            Beam::Edge(_, _) => return Err(GridError::SomethingWentWrong),
+            Beam::Through(n, d) => (n, d),
+        };
+        loop {
+            let r = self.next_step(next.try_into().or(Err(GridError::BadCoordinates))?, dir, t)?;
+            match r {
+                Beam::HeadOn => return Ok(r),
+                Beam::Edge(e, _) => {
+                    if e == start {
+                        return Ok(Beam::Reflect);
+                    } else {
+                        return Ok(r);
+                    }
+                }
+                Beam::Reflect => return Err(GridError::SomethingWentWrong),
+                Beam::Through(n, d) => {
+                    next = n;
+                    dir = d;
+                }
+            };
+        }
+
+        // Shouldn't get to this point
+        // Err(GridError::SomethingWentWrong)
+    }
+
+    fn generate_edges(&mut self) -> Result<(), GridError> {
+        let t = BallType::Solution;
+        let mut count = 1;
+        // loop through edges
+        let edges = self.edges();
+        for edge in edges {
+            // check if already a through
+            match self.get_edge(edge)? {
+                Deflection::Through(_) => continue,
+                Deflection::EmptyRow | Deflection::EmptyCol => {}
+                _ => return Err(GridError::SomethingWentWrong),
+            };
+
+            let r = self.walk_from_edge(edge, t)?;
+            match r {
+                Beam::HeadOn => self.set_edge(edge, Deflection::HeadOn)?,
+                Beam::Reflect => self.set_edge(edge, Deflection::Reflect)?,
+                Beam::Edge(other_edge, _) => {
+                    if other_edge == edge {
+                        self.set_edge(edge, Deflection::Reflect)?;
+                    } else {
+                        self.set_edge(edge, Deflection::Through(BeamId(count)))?;
+                        self.set_edge(other_edge, Deflection::Through(BeamId(count)))?;
+                        count += 1;
+                    }
+                }
+                _ => return Err(GridError::SomethingWentWrong),
+            };
+        }
+        Ok(())
+    }
 }
 
 fn format_edge_row(row: &EdgeRow, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -455,7 +600,64 @@ mod tests {
     }
 
     #[test]
-    fn ball_adding() {}
+    fn edge_set_get() {
+        let s = 3;
+        let mut g = Grid::new(s as usize).unwrap();
+        for index in 0..s {
+            let edge = Coord(-1, index);
+            assert_eq!(Ok(Deflection::EmptyRow), g.get_edge(edge));
+            let edge = Coord(s, index);
+            assert_eq!(Ok(Deflection::EmptyRow), g.get_edge(edge));
+            let edge = Coord(index, -1);
+            assert_eq!(Ok(Deflection::EmptyCol), g.get_edge(edge));
+            let edge = Coord(index, s);
+            assert_eq!(Ok(Deflection::EmptyCol), g.get_edge(edge));
+        }
+
+        assert_eq!(Ok(()), g.set_edge(Coord(-1, 0), Deflection::HeadOn));
+        assert_eq!(Ok(()), g.set_edge(Coord(-1, 1), Deflection::Reflect));
+        assert_eq!(
+            Ok(()),
+            g.set_edge(Coord(-1, 2), Deflection::Through(BeamId(1)))
+        );
+
+        assert_eq!(Ok(()), g.set_edge(Coord(s, 0), Deflection::HeadOn));
+        assert_eq!(Ok(()), g.set_edge(Coord(s, 1), Deflection::Reflect));
+        assert_eq!(
+            Ok(()),
+            g.set_edge(Coord(s, 2), Deflection::Through(BeamId(2)))
+        );
+
+        assert_eq!(Ok(()), g.set_edge(Coord(0, -1), Deflection::HeadOn));
+        assert_eq!(Ok(()), g.set_edge(Coord(1, -1), Deflection::Reflect));
+        assert_eq!(
+            Ok(()),
+            g.set_edge(Coord(2, -1), Deflection::Through(BeamId(1)))
+        );
+
+        assert_eq!(Ok(()), g.set_edge(Coord(0, s), Deflection::HeadOn));
+        assert_eq!(Ok(()), g.set_edge(Coord(1, s), Deflection::Reflect));
+        assert_eq!(
+            Ok(()),
+            g.set_edge(Coord(2, s), Deflection::Through(BeamId(1)))
+        );
+
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 0)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(-1, 1)));
+        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(-1, 2)));
+
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(s, 0),));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(s, 1),));
+        assert_eq!(Ok(Deflection::Through(BeamId(2))), g.get_edge(Coord(s, 2),));
+
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, -1)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(1, -1)));
+        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(2, -1)));
+
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, s),));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(1, s),));
+        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(2, s),));
+    }
 
     #[test]
     fn edge_step_1() {
@@ -661,5 +863,322 @@ mod tests {
             Ok(Beam::HeadOn),
             g.next_step(Point(1, 2), Direction::DOWN, BallType::Solution)
         );
+    }
+
+    #[test]
+    fn edges() {
+        let s = 4;
+        let mut edges = Edges::new(s as usize);
+        assert_eq!(Some(Coord(-1, 0)), edges.next());
+        assert_eq!(Some(Coord(-1, 1)), edges.next());
+        assert_eq!(Some(Coord(-1, 2)), edges.next());
+        assert_eq!(Some(Coord(-1, 3)), edges.next());
+        assert_eq!(Some(Coord(0, -1)), edges.next());
+        assert_eq!(Some(Coord(1, -1)), edges.next());
+        assert_eq!(Some(Coord(2, -1)), edges.next());
+        assert_eq!(Some(Coord(3, -1)), edges.next());
+        assert_eq!(Some(Coord(0, s)), edges.next());
+        assert_eq!(Some(Coord(1, s)), edges.next());
+        assert_eq!(Some(Coord(2, s)), edges.next());
+        assert_eq!(Some(Coord(3, s)), edges.next());
+        assert_eq!(Some(Coord(s, 0)), edges.next());
+        assert_eq!(Some(Coord(s, 1)), edges.next());
+        assert_eq!(Some(Coord(s, 2)), edges.next());
+        assert_eq!(Some(Coord(s, 3)), edges.next());
+        assert_eq!(None, edges.next());
+        assert_eq!(None, edges.next());
+    }
+
+    #[test]
+    fn edges_from_grid() {
+        let s = 3;
+        let g = Grid::new(s as usize).unwrap();
+        let mut edges = g.edges();
+        assert_eq!(Some(Coord(-1, 0)), edges.next());
+        assert_eq!(Some(Coord(-1, 1)), edges.next());
+        assert_eq!(Some(Coord(-1, 2)), edges.next());
+        assert_eq!(Some(Coord(0, -1)), edges.next());
+        assert_eq!(Some(Coord(1, -1)), edges.next());
+        assert_eq!(Some(Coord(2, -1)), edges.next());
+        assert_eq!(Some(Coord(0, s)), edges.next());
+        assert_eq!(Some(Coord(1, s)), edges.next());
+        assert_eq!(Some(Coord(2, s)), edges.next());
+        assert_eq!(Some(Coord(s, 0)), edges.next());
+        assert_eq!(Some(Coord(s, 1)), edges.next());
+        assert_eq!(Some(Coord(s, 2)), edges.next());
+        assert_eq!(None, edges.next());
+        assert_eq!(None, edges.next());
+    }
+
+    #[test]
+    fn walk_edges_1() {
+        // define a 3x3 grid, with 2 balls, and expected edges
+        //       R   H   R
+        //     +-----------+
+        //  H  |   | O |   | H
+        //  1  |   |   |   | R
+        //  H  |   |   | O | H
+        //     +-----------+
+        //       1   R   H
+
+        let mut g = Grid::new(3).unwrap();
+        g.add_ball_solution(Point(0, 1)).unwrap();
+        g.add_ball_solution(Point(2, 2)).unwrap();
+
+        // Top edge
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(-1, 0), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(-1, 1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(-1, 2), BallType::Solution)
+        );
+
+        // Left edge
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(0, -1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(3, 0), Direction::DOWN)),
+            g.walk_from_edge(Coord(1, -1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(2, -1), BallType::Solution)
+        );
+
+        // Right edge
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(0, 3), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(1, 3), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(2, 3), BallType::Solution)
+        );
+
+        // Bottom edge
+        assert_eq!(
+            Ok(Beam::Edge(Coord(1, -1), Direction::LEFT)),
+            g.walk_from_edge(Coord(3, 0), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(3, 1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(3, 2), BallType::Solution)
+        );
+    }
+
+    #[test]
+    fn walk_edges_2() {
+        // define a 3x3 grid, with 2 balls, and expected edges
+        //       H   R   H
+        //     +-----------+
+        //  H  | O |   | O | H
+        //  R  |   |   |   | R
+        //  1  |   |   |   | 1
+        //     +-----------+
+        //       H   R   H
+
+        let mut g = Grid::new(3).unwrap();
+        g.add_ball_solution(Point(0, 0)).unwrap();
+        g.add_ball_solution(Point(0, 2)).unwrap();
+
+        // Top edge
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(-1, 0), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(-1, 1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(-1, 2), BallType::Solution)
+        );
+
+        // Left edge
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(0, -1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(1, -1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(2, 3), Direction::RIGHT)),
+            g.walk_from_edge(Coord(2, -1), BallType::Solution)
+        );
+
+        // Right edge
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(0, 3), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(1, 3), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Edge(Coord(2, -1), Direction::LEFT)),
+            g.walk_from_edge(Coord(2, 3), BallType::Solution)
+        );
+
+        // Bottom edge
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(3, 0), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::Reflect),
+            g.walk_from_edge(Coord(3, 1), BallType::Solution)
+        );
+        assert_eq!(
+            Ok(Beam::HeadOn),
+            g.walk_from_edge(Coord(3, 2), BallType::Solution)
+        );
+    }
+
+    #[test]
+    fn check_solution_edges_3x_2_1() {
+        // define a 3x3 grid, with 2 balls, and expected edges
+        //       R   H   R
+        //     +-----------+
+        //  H  |   | O |   | H
+        //  1  |   |   |   | R
+        //  H  |   |   | O | H
+        //     +-----------+
+        //       1   R   H
+
+        let mut g = Grid::new(3).unwrap();
+        g.add_ball_solution(Point(0, 1)).unwrap();
+        g.add_ball_solution(Point(2, 2)).unwrap();
+        g.generate_edges().unwrap();
+
+        // Top edge
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(-1, 0)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 1)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(-1, 2)));
+
+        // Left edge
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, -1)));
+        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(1, -1)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(2, -1)));
+
+        // Right edge
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, 3)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(1, 3)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(2, 3)));
+
+        // Bottom edge
+        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(3, 0)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(3, 1)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(3, 2)));
+    }
+
+    #[test]
+    fn check_solution_edges_3x_2_2() {
+        // define a 3x3 grid, with 2 balls, and expected edges
+        //       H   R   H
+        //     +-----------+
+        //  H  | O |   | O | H
+        //  R  |   |   |   | R
+        //  1  |   |   |   | 1
+        //     +-----------+
+        //       H   R   H
+
+        let mut g = Grid::new(3).unwrap();
+        g.add_ball_solution(Point(0, 0)).unwrap();
+        g.add_ball_solution(Point(0, 2)).unwrap();
+
+        g.generate_edges().unwrap();
+
+        // Top edge
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 0)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(-1, 1)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 2)));
+
+        // Left edge
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, -1)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(1, -1)));
+        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(2, -1)));
+
+        // Right edge
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, 3)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(1, 3)));
+        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(2, 3)));
+
+        // Bottom edge
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(3, 0)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(3, 1)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(3, 2)));
+    }
+
+    #[test]
+    fn check_solution_edges_10x_6_1() {
+        // define a 10x10 grid, with 6 balls, and expected edges
+        //       H6HH1H9ab8
+        //      +----------+
+        //    1 |..........| 9
+        //    H |.....O....| H
+        //    R |..........| a
+        //    H |O.....O...| H
+        //    R |..O.......| H
+        //    2 |..........| b
+        //    H |.....O.O..| h
+        //    3 |..........| 7
+        //    4 |..........| 4
+        //    5 |..........| 5
+        //      +----------+
+        //       H2H63HRH78
+
+        let mut g = Grid::new(10).unwrap();
+        g.add_ball_solution(Point(1, 5)).unwrap();
+        g.add_ball_solution(Point(3, 0)).unwrap();
+        g.add_ball_solution(Point(3, 6)).unwrap();
+        g.add_ball_solution(Point(4, 2)).unwrap();
+        g.add_ball_solution(Point(6, 5)).unwrap();
+        g.add_ball_solution(Point(6, 7)).unwrap();
+        g.generate_edges().unwrap();
+
+        // Top edge, H & R
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 0)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 2)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 3)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 5)));
+        // Left edge, H & R
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(1, -1)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(2, -1)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(3, -1)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(4, -1)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(6, -1)));
+        // Right edge, H & R
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(1, 10)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(3, 10)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(4, 10)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(6, 10)));
+        // Bottom edge, H & R
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(10, 0)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(10, 2)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(10, 5)));
+        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(10, 6)));
+        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(10, 7)));
+
+        // TODO: check for throughs in an ID agnostic manner
     }
 }
