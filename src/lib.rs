@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::ops::Deref;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 struct GridSize(usize);
 
 impl From<GridSize> for usize {
@@ -92,18 +93,20 @@ pub struct Grid {
     solution: Balls,
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 struct BeamId(u8);
 
 type EdgeRow = Vec<Deflection>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 struct EdgeRows {
     size: GridSize,
     top: EdgeRow,
     bottom: EdgeRow,
     left: EdgeRow,
     right: EdgeRow,
+    through: HashSet<CoordPair>,
+    through_count: BeamId,
 }
 
 #[derive(Debug)]
@@ -171,6 +174,8 @@ impl EdgeRows {
             bottom: vec![Deflection::EmptyRow; size.into()],
             left: vec![Deflection::EmptyCol; size.into()],
             right: vec![Deflection::EmptyCol; size.into()],
+            through: HashSet::with_capacity(usize::from(size) * 2),
+            through_count: BeamId(1),
         }
     }
 
@@ -194,7 +199,7 @@ impl EdgeRows {
         EdgesBottom::new(*self.size)
     }
 
-    fn get(&self, edge: Coord) -> Option<Deflection> {
+    fn get_row_index(&self, edge: Coord) -> Option<(&Vec<Deflection>, usize)> {
         let (edge_row, index) = match edge {
             Coord(-1, i) => (&self.top, i),
             // left edge
@@ -208,11 +213,10 @@ impl EdgeRows {
         if index < 0 || index > self.size.into() {
             return None;
         };
-        let index: usize = index as usize;
-        Some(edge_row[index])
+        Some((edge_row, index as usize))
     }
 
-    fn set(&mut self, edge: Coord, value: Deflection) -> Option<()> {
+    fn get_mut_row_index(&mut self, edge: Coord) -> Option<(&mut Vec<Deflection>, usize)> {
         let (edge_row, index) = match edge {
             Coord(-1, i) => (&mut self.top, i),
             // left edge
@@ -226,13 +230,94 @@ impl EdgeRows {
         if index < 0 || index > self.size.into() {
             return None;
         };
-        let index: usize = index as usize;
-        edge_row[index] = value;
+        Some((edge_row, index as usize))
+    }
+
+    fn get(&self, edge: Coord) -> Option<Deflection> {
+        let (edge_row, index) = self.get_row_index(edge)?;
+        Some(edge_row[index])
+    }
+
+    fn is_empty(&self, edge: Coord) -> Option<bool> {
+        match self.get(edge)? {
+            Deflection::EmptyCol | Deflection::EmptyRow => Some(true),
+            _ => Some(false),
+        }
+    }
+
+    fn add_head_on(&mut self, edge: Coord) -> Option<()> {
+        // check it's blank first
+        if !self.is_empty(edge)? {
+            return None;
+        }
+        let (edge_row, index) = self.get_mut_row_index(edge)?;
+        edge_row[index] = Deflection::HeadOn;
         Some(())
+    }
+
+    fn add_reflection(&mut self, edge: Coord) -> Option<()> {
+        // check it's blank first
+        if !self.is_empty(edge)? {
+            return None;
+        }
+        let (edge_row, index) = self.get_mut_row_index(edge)?;
+        edge_row[index] = Deflection::Reflect;
+        Some(())
+    }
+
+    fn add_through(&mut self, edge1: Coord, edge2: Coord) -> Option<bool> {
+        // check they are edges first
+        if !self.size.at_edge(edge1) || !self.size.at_edge(edge2) {
+            return None;
+        }
+        // check they are not equal
+        if edge1 == edge2 {
+            return None;
+        }
+        let pair = CoordPair(edge1, edge2);
+        // insert pair, checking if already inserted
+        if !self.through.insert(pair) {
+            return Some(false);
+        }
+        // check both are blank
+        if !self.is_empty(edge1)? || !self.is_empty(edge2)? {
+            return None;
+        }
+        // add deflections to edges
+        let id = self.through_count;
+        let (edge_row, index) = self.get_mut_row_index(edge1)?;
+        edge_row[index] = Deflection::Through(id);
+        let (edge_row, index) = self.get_mut_row_index(edge2)?;
+        edge_row[index] = Deflection::Through(id);
+        self.through_count.0 += 1;
+        Some(true)
     }
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(Debug, Clone, Copy, Eq)]
+struct CoordPair(Coord, Coord);
+
+// A CoordPair is equal if it contains the same two Coord values, in any order.
+impl PartialEq for CoordPair {
+    fn eq(&self, other: &Self) -> bool {
+        (self.0 == other.0 && self.1 == other.1) || (self.0 == other.1 && self.1 == other.0)
+    }
+}
+
+impl std::hash::Hash for CoordPair {
+    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+        // because ordering of writes is important, need to have consistent ordering
+        if self.0 <= self.1 {
+            self.0.hash(hasher);
+            self.1.hash(hasher);
+        } else {
+            self.1.hash(hasher);
+            self.0.hash(hasher);
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 enum Deflection {
     EmptyRow,
     EmptyCol,
@@ -241,7 +326,7 @@ enum Deflection {
     Through(BeamId),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Side {
     Top = 0,
     Left = 1,
@@ -249,7 +334,7 @@ enum Side {
     Bottom = 3,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Beam {
     HeadOn,
     Edge(Coord, Direction),
@@ -257,13 +342,13 @@ enum Beam {
     Reflect,
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 enum BallType {
     Solution,
     Guess,
 }
 
-#[derive(PartialEq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum GridError {
     BadCoordinates,
     DuplicateBall,
@@ -272,7 +357,7 @@ pub enum GridError {
     NoSuchBall,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct Point(pub usize, pub usize);
 
 #[derive(Debug, PartialEq)]
@@ -302,7 +387,7 @@ impl std::str::FromStr for Point {
     }
 }
 
-#[derive(PartialEq, Debug, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 struct Coord(isize, isize);
 
 impl Coord {
@@ -608,21 +693,12 @@ impl Grid {
         self.edges.get(edge).ok_or(GridError::BadCoordinates)
     }
 
-    fn set_edge(&mut self, edge: Coord, value: Deflection) -> Result<(), GridError> {
-        if !self.at_edge(edge) {
-            return Err(GridError::BadCoordinates);
-        }
-        self.edges.set(edge, value).ok_or(GridError::BadCoordinates)
-    }
-
     fn generate_solution_edges(&mut self) -> Result<(), GridError> {
         generate_edges(&self.solution, &mut self.edges)
     }
 }
 
 fn generate_edges(balls: &Balls, edge_rows: &mut EdgeRows) -> Result<(), GridError> {
-    let t = BallType::Solution;
-    let mut count = 1;
     // loop through edges
     let edges = edge_rows.edges();
     for edge in edges {
@@ -635,19 +711,21 @@ fn generate_edges(balls: &Balls, edge_rows: &mut EdgeRows) -> Result<(), GridErr
 
         let r = walk_from_edge(balls, edge)?;
         match r {
-            Beam::HeadOn => edge_rows.set(edge, Deflection::HeadOn).unwrap(),
-            Beam::Reflect => edge_rows.set(edge, Deflection::Reflect).unwrap(),
+            Beam::HeadOn => edge_rows
+                .add_head_on(edge)
+                .ok_or(GridError::SomethingWentWrong)?,
+            Beam::Reflect => edge_rows
+                .add_reflection(edge)
+                .ok_or(GridError::SomethingWentWrong)?,
             Beam::Edge(other_edge, _) => {
                 if other_edge == edge {
-                    edge_rows.set(edge, Deflection::Reflect).unwrap();
+                    edge_rows
+                        .add_reflection(edge)
+                        .ok_or(GridError::SomethingWentWrong)?;
                 } else {
                     edge_rows
-                        .set(edge, Deflection::Through(BeamId(count)))
-                        .unwrap();
-                    edge_rows
-                        .set(other_edge, Deflection::Through(BeamId(count)))
-                        .unwrap();
-                    count += 1;
+                        .add_through(edge, other_edge)
+                        .ok_or(GridError::SomethingWentWrong)?;
                 }
             }
             _ => return Err(GridError::SomethingWentWrong),
@@ -880,62 +958,62 @@ mod tests {
 
     #[test]
     fn edge_set_get() {
-        let s = 3;
-        let mut g = Grid::new(s as usize).unwrap();
-        for index in 0..s {
+        let s = GridSize::new(3).unwrap();
+        let mut ers = EdgeRows::new(s);
+        for index in 0..s.into() {
             let edge = Coord(-1, index);
-            assert_eq!(Ok(Deflection::EmptyRow), g.get_edge(edge));
-            let edge = Coord(s, index);
-            assert_eq!(Ok(Deflection::EmptyRow), g.get_edge(edge));
+            assert_eq!(Some(Deflection::EmptyRow), ers.get(edge));
+            let edge = Coord(s.into(), index);
+            assert_eq!(Some(Deflection::EmptyRow), ers.get(edge));
             let edge = Coord(index, -1);
-            assert_eq!(Ok(Deflection::EmptyCol), g.get_edge(edge));
-            let edge = Coord(index, s);
-            assert_eq!(Ok(Deflection::EmptyCol), g.get_edge(edge));
+            assert_eq!(Some(Deflection::EmptyCol), ers.get(edge));
+            let edge = Coord(index, s.into());
+            assert_eq!(Some(Deflection::EmptyCol), ers.get(edge));
         }
 
-        assert_eq!(Ok(()), g.set_edge(Coord(-1, 0), Deflection::HeadOn));
-        assert_eq!(Ok(()), g.set_edge(Coord(-1, 1), Deflection::Reflect));
+        assert_eq!(Some(()), ers.add_head_on(Coord(-1, 0)));
+        assert_eq!(Some(()), ers.add_reflection(Coord(-1, 1)));
+        assert_eq!(Some(true), ers.add_through(Coord(-1, 2), Coord(2, -1)));
+
+        assert_eq!(Some(()), ers.add_head_on(Coord(s.into(), 0)));
+        assert_eq!(Some(()), ers.add_reflection(Coord(s.into(), 1)));
         assert_eq!(
-            Ok(()),
-            g.set_edge(Coord(-1, 2), Deflection::Through(BeamId(1)))
+            Some(true),
+            ers.add_through(Coord(s.into(), 2), Coord(2, s.into()))
         );
 
-        assert_eq!(Ok(()), g.set_edge(Coord(s, 0), Deflection::HeadOn));
-        assert_eq!(Ok(()), g.set_edge(Coord(s, 1), Deflection::Reflect));
+        assert_eq!(Some(()), ers.add_head_on(Coord(0, -1)));
+        assert_eq!(Some(()), ers.add_reflection(Coord(1, -1)));
+        assert_eq!(Some(false), ers.add_through(Coord(2, -1), Coord(-1, 2)));
+
+        assert_eq!(Some(()), ers.add_head_on(Coord(0, s.into())));
+        assert_eq!(Some(()), ers.add_reflection(Coord(1, s.into())));
         assert_eq!(
-            Ok(()),
-            g.set_edge(Coord(s, 2), Deflection::Through(BeamId(2)))
+            Some(false),
+            ers.add_through(Coord(2, s.into()), Coord(s.into(), 2))
         );
 
-        assert_eq!(Ok(()), g.set_edge(Coord(0, -1), Deflection::HeadOn));
-        assert_eq!(Ok(()), g.set_edge(Coord(1, -1), Deflection::Reflect));
+        assert_eq!(Some(Deflection::HeadOn), ers.get(Coord(-1, 0)));
+        assert_eq!(Some(Deflection::Reflect), ers.get(Coord(-1, 1)));
+        assert_eq!(Some(Deflection::Through(BeamId(1))), ers.get(Coord(-1, 2)));
+
+        assert_eq!(Some(Deflection::HeadOn), ers.get(Coord(s.into(), 0),));
+        assert_eq!(Some(Deflection::Reflect), ers.get(Coord(s.into(), 1),));
         assert_eq!(
-            Ok(()),
-            g.set_edge(Coord(2, -1), Deflection::Through(BeamId(1)))
+            Some(Deflection::Through(BeamId(2))),
+            ers.get(Coord(s.into(), 2),)
         );
 
-        assert_eq!(Ok(()), g.set_edge(Coord(0, s), Deflection::HeadOn));
-        assert_eq!(Ok(()), g.set_edge(Coord(1, s), Deflection::Reflect));
+        assert_eq!(Some(Deflection::HeadOn), ers.get(Coord(0, -1)));
+        assert_eq!(Some(Deflection::Reflect), ers.get(Coord(1, -1)));
+        assert_eq!(Some(Deflection::Through(BeamId(1))), ers.get(Coord(2, -1)));
+
+        assert_eq!(Some(Deflection::HeadOn), ers.get(Coord(0, s.into()),));
+        assert_eq!(Some(Deflection::Reflect), ers.get(Coord(1, s.into()),));
         assert_eq!(
-            Ok(()),
-            g.set_edge(Coord(2, s), Deflection::Through(BeamId(1)))
+            Some(Deflection::Through(BeamId(2))),
+            ers.get(Coord(2, s.into()),)
         );
-
-        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(-1, 0)));
-        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(-1, 1)));
-        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(-1, 2)));
-
-        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(s, 0),));
-        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(s, 1),));
-        assert_eq!(Ok(Deflection::Through(BeamId(2))), g.get_edge(Coord(s, 2),));
-
-        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, -1)));
-        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(1, -1)));
-        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(2, -1)));
-
-        assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(0, s),));
-        assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(1, s),));
-        assert_eq!(Ok(Deflection::Through(BeamId(1))), g.get_edge(Coord(2, s),));
     }
 
     #[test]
@@ -1239,33 +1317,21 @@ mod tests {
             assert_eq!(Some(Deflection::EmptyRow), rows.get(e))
         }
 
-        assert_eq!(Some(()), rows.set(Coord(-1, 0), Deflection::HeadOn));
-        assert_eq!(Some(()), rows.set(Coord(-1, 1), Deflection::Reflect));
-        assert_eq!(
-            Some(()),
-            rows.set(Coord(-1, 2), Deflection::Through(BeamId(1)))
-        );
+        assert_eq!(Some(()), rows.add_head_on(Coord(-1, 0)));
+        assert_eq!(Some(()), rows.add_reflection(Coord(-1, 1)));
+        assert_eq!(Some(true), rows.add_through(Coord(-1, 2), Coord(2, -1)));
 
-        assert_eq!(Some(()), rows.set(Coord(s, 0), Deflection::HeadOn));
-        assert_eq!(Some(()), rows.set(Coord(s, 1), Deflection::Reflect));
-        assert_eq!(
-            Some(()),
-            rows.set(Coord(s, 2), Deflection::Through(BeamId(2)))
-        );
+        assert_eq!(Some(()), rows.add_head_on(Coord(s, 0)));
+        assert_eq!(Some(()), rows.add_reflection(Coord(s, 1)));
+        assert_eq!(Some(true), rows.add_through(Coord(s, 2), Coord(2, s)));
 
-        assert_eq!(Some(()), rows.set(Coord(0, -1), Deflection::HeadOn));
-        assert_eq!(Some(()), rows.set(Coord(1, -1), Deflection::Reflect));
-        assert_eq!(
-            Some(()),
-            rows.set(Coord(2, -1), Deflection::Through(BeamId(1)))
-        );
+        assert_eq!(Some(()), rows.add_head_on(Coord(0, -1)));
+        assert_eq!(Some(()), rows.add_reflection(Coord(1, -1)));
+        assert_eq!(Some(false), rows.add_through(Coord(2, -1), Coord(-1, 2)));
 
-        assert_eq!(Some(()), rows.set(Coord(0, s), Deflection::HeadOn));
-        assert_eq!(Some(()), rows.set(Coord(1, s), Deflection::Reflect));
-        assert_eq!(
-            Some(()),
-            rows.set(Coord(2, s), Deflection::Through(BeamId(1)))
-        );
+        assert_eq!(Some(()), rows.add_head_on(Coord(0, s)));
+        assert_eq!(Some(()), rows.add_reflection(Coord(1, s)));
+        assert_eq!(Some(false), rows.add_through(Coord(2, s), Coord(s, 2)));
 
         assert_eq!(Some(Deflection::HeadOn), rows.get(Coord(-1, 0)));
         assert_eq!(Some(Deflection::Reflect), rows.get(Coord(-1, 1)));
@@ -1281,7 +1347,7 @@ mod tests {
 
         assert_eq!(Some(Deflection::HeadOn), rows.get(Coord(0, s),));
         assert_eq!(Some(Deflection::Reflect), rows.get(Coord(1, s),));
-        assert_eq!(Some(Deflection::Through(BeamId(1))), rows.get(Coord(2, s),));
+        assert_eq!(Some(Deflection::Through(BeamId(2))), rows.get(Coord(2, s),));
     }
 
     #[test]
@@ -1299,11 +1365,13 @@ mod tests {
         assert_eq!(er1, er2);
         assert_eq!(er2, er1);
 
-        er1.set(Coord(-1, 2), Deflection::HeadOn);
+        er1.add_head_on(Coord(-1, 2));
         assert_ne!(er1, er2);
 
-        er2.set(Coord(-1, 2), Deflection::HeadOn);
+        er2.add_head_on(Coord(-1, 2));
         assert_eq!(er1, er2);
+
+        // TODO: add throughs
     }
 
     #[test]
@@ -1516,5 +1584,33 @@ mod tests {
         assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(10, 7)));
 
         // TODO: check for throughs in an ID agnostic manner
+    }
+
+    #[test]
+    fn coord_pair_eq() {
+        let c1 = Coord(-1, 1);
+        let c2 = Coord(2, 3);
+        let c3 = Coord(4, -5);
+        assert_eq!(c1, c1);
+        assert_eq!(c2, c2);
+        assert_ne!(c1, c2);
+        assert_ne!(c2, c1);
+        assert_ne!(c3, c1);
+        assert_ne!(c2, c3);
+        // same coordinates
+        assert_eq!(CoordPair(c1, c1), CoordPair(c1, c1));
+        // same coordinates, different
+        assert_eq!(CoordPair(c1, c2), CoordPair(c1, c2));
+        // same coordinates, different order
+        assert_eq!(CoordPair(c1, c3), CoordPair(c3, c1));
+        // same coordinates, different order
+        assert_eq!(CoordPair(c3, c2), CoordPair(c2, c3));
+
+        // different coordinates
+        assert_ne!(CoordPair(c1, c1), CoordPair(c2, c2));
+        // one common coordinate, same position
+        assert_ne!(CoordPair(c1, c2), CoordPair(c3, c2));
+        // one common coordinate, different position
+        assert_ne!(CoordPair(c1, c2), CoordPair(c2, c3));
     }
 }
