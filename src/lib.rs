@@ -138,11 +138,35 @@ struct EdgeRows {
     through_count: BeamId,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct Balls {
     balls: Vec<bool>,
     size: GridSize,
     count: usize,
+}
+
+struct BallsIter {
+    balls: Vec<Point>,
+}
+
+impl BallsIter {
+    fn new(b: &Balls) -> BallsIter {
+        let mut balls = Vec::with_capacity(b.count);
+        for p in b.size.points() {
+            match b.get(p) {
+                Some(true) => balls.push(p),
+                _ => continue,
+            }
+        }
+        BallsIter { balls }
+    }
+}
+
+impl Iterator for BallsIter {
+    type Item = Point;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.balls.pop()
+    }
 }
 
 impl Balls {
@@ -192,6 +216,10 @@ impl Balls {
             *b = false;
         }
         self.count = 0
+    }
+
+    fn iter(&self) -> BallsIter {
+        BallsIter::new(&self)
     }
 }
 
