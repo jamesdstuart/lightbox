@@ -122,12 +122,12 @@ pub struct Grid {
     solution: Balls,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, PartialOrd, Ord)]
 struct BeamId(u8);
 
 type EdgeRow = Vec<Deflection>;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct EdgeRows {
     size: GridSize,
     top: EdgeRow,
@@ -176,9 +176,6 @@ impl Balls {
             balls: vec![false; size.0 * size.0],
             count: 0,
         }
-    }
-    fn is_ball(&self, p: Point) -> Option<bool> {
-        Some(self.balls[self.size.point_to_index(p)?])
     }
 
     fn add(&mut self, p: Point) -> Result<(), GridError> {
@@ -232,7 +229,7 @@ impl EdgeRows {
             left: vec![Deflection::EmptyCol; size.into()],
             right: vec![Deflection::EmptyCol; size.into()],
             through: HashSet::with_capacity(usize::from(size) * 2),
-            through_count: BeamId(1),
+            through_count: BeamId(0),
         }
     }
 
@@ -256,7 +253,7 @@ impl EdgeRows {
         EdgesBottom::new(*self.size)
     }
 
-    fn get_row_index(&self, edge: Coord) -> Option<(&Vec<Deflection>, usize)> {
+    fn get_row_index(&self, edge: Coord) -> Option<(&EdgeRow, usize)> {
         let (edge_row, index) = match edge {
             Coord(-1, i) => (&self.top, i),
             // left edge
@@ -273,7 +270,7 @@ impl EdgeRows {
         Some((edge_row, index as usize))
     }
 
-    fn get_mut_row_index(&mut self, edge: Coord) -> Option<(&mut Vec<Deflection>, usize)> {
+    fn get_mut_row_index(&mut self, edge: Coord) -> Option<(&mut EdgeRow, usize)> {
         let (edge_row, index) = match edge {
             Coord(-1, i) => (&mut self.top, i),
             // left edge
@@ -341,15 +338,56 @@ impl EdgeRows {
             return None;
         }
         // add deflections to edges
+        self.through_count.0 += 1;
         let id = self.through_count;
         let (edge_row, index) = self.get_mut_row_index(edge1)?;
         edge_row[index] = Deflection::Through(id);
         let (edge_row, index) = self.get_mut_row_index(edge2)?;
         edge_row[index] = Deflection::Through(id);
-        self.through_count.0 += 1;
         Some(true)
     }
+
+    fn equivalent_edge_row(this: &EdgeRow, other: &EdgeRow) -> bool {
+        // check length
+        if this.len() != other.len() {
+            return false;
+        }
+        for (pos, d) in this.iter().enumerate() {
+            if !d.equivalent(&other[pos]) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn equivalent_edge_rows(&self, other: &Self) -> bool {
+        EdgeRows::equivalent_edge_row(&self.top, &other.top)
+            && EdgeRows::equivalent_edge_row(&self.left, &other.left)
+            && EdgeRows::equivalent_edge_row(&self.right, &other.right)
+            && EdgeRows::equivalent_edge_row(&self.bottom, &other.bottom)
+    }
+
+    fn are_empty_edges(&self) -> bool {
+        for e in self.edges() {
+            match self.get(e).unwrap() {
+                Deflection::EmptyCol | Deflection::EmptyRow => return true,
+                _ => {}
+            }
+        }
+        return false;
+    }
 }
+
+impl PartialEq for EdgeRows {
+    fn eq(&self, other: &Self) -> bool {
+        (self.size == other.size)
+            && (self.through_count == other.through_count)
+            && (self.through == other.through)
+            && (self.equivalent_edge_rows(other))
+    }
+}
+
+impl Eq for EdgeRows {}
 
 #[derive(Debug, Clone, Copy, Eq)]
 struct CoordPair(Coord, Coord);
@@ -381,6 +419,18 @@ enum Deflection {
     HeadOn,
     Reflect,
     Through(BeamId),
+}
+
+impl Deflection {
+    fn equivalent(&self, other: &Self) -> bool {
+        match self {
+            Deflection::Through(x) => match other {
+                Deflection::Through(y) => true,
+                _ => false,
+            },
+            _ => self == other,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -672,7 +722,7 @@ impl Grid {
         })
     }
 
-    fn edges(&self) -> Edges {
+    fn edge_iter(&self) -> Edges {
         self.edges.edges()
     }
 
@@ -1014,7 +1064,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_set_get() {
+    fn edge_rows_add_get() {
         let s = GridSize::new(3).unwrap();
         let mut ers = EdgeRows::new(s);
         for index in 0..s.into() {
@@ -1283,10 +1333,38 @@ mod tests {
     }
 
     #[test]
+    fn coord_pair_eq() {
+        let c1 = Coord(-1, 1);
+        let c2 = Coord(2, 3);
+        let c3 = Coord(4, -5);
+        assert_eq!(c1, c1);
+        assert_eq!(c2, c2);
+        assert_ne!(c1, c2);
+        assert_ne!(c2, c1);
+        assert_ne!(c3, c1);
+        assert_ne!(c2, c3);
+        // same coordinates
+        assert_eq!(CoordPair(c1, c1), CoordPair(c1, c1));
+        // same coordinates, different
+        assert_eq!(CoordPair(c1, c2), CoordPair(c1, c2));
+        // same coordinates, different order
+        assert_eq!(CoordPair(c1, c3), CoordPair(c3, c1));
+        // same coordinates, different order
+        assert_eq!(CoordPair(c3, c2), CoordPair(c2, c3));
+
+        // different coordinates
+        assert_ne!(CoordPair(c1, c1), CoordPair(c2, c2));
+        // one common coordinate, same position
+        assert_ne!(CoordPair(c1, c2), CoordPair(c3, c2));
+        // one common coordinate, different position
+        assert_ne!(CoordPair(c1, c2), CoordPair(c2, c3));
+    }
+
+    #[test]
     fn edges_from_grid() {
         let s = 3;
         let g = Grid::new(s as usize).unwrap();
-        let mut edges = g.edges();
+        let mut edges = g.edge_iter();
         assert_eq!(Some(Coord(-1, 0)), edges.next());
         assert_eq!(Some(Coord(-1, 1)), edges.next());
         assert_eq!(Some(Coord(-1, 2)), edges.next());
@@ -1358,56 +1436,6 @@ mod tests {
     }
 
     #[test]
-    fn edge_rows_1() {
-        let s = 3;
-        let mut rows = EdgeRows::new(s.try_into().unwrap());
-        for e in rows.edges_top() {
-            assert_eq!(Some(Deflection::EmptyRow), rows.get(e))
-        }
-        for e in rows.edges_left() {
-            assert_eq!(Some(Deflection::EmptyCol), rows.get(e))
-        }
-        for e in rows.edges_right() {
-            assert_eq!(Some(Deflection::EmptyCol), rows.get(e))
-        }
-        for e in rows.edges_bottom() {
-            assert_eq!(Some(Deflection::EmptyRow), rows.get(e))
-        }
-
-        assert_eq!(Some(()), rows.add_head_on(Coord(-1, 0)));
-        assert_eq!(Some(()), rows.add_reflection(Coord(-1, 1)));
-        assert_eq!(Some(true), rows.add_through(Coord(-1, 2), Coord(2, -1)));
-
-        assert_eq!(Some(()), rows.add_head_on(Coord(s, 0)));
-        assert_eq!(Some(()), rows.add_reflection(Coord(s, 1)));
-        assert_eq!(Some(true), rows.add_through(Coord(s, 2), Coord(2, s)));
-
-        assert_eq!(Some(()), rows.add_head_on(Coord(0, -1)));
-        assert_eq!(Some(()), rows.add_reflection(Coord(1, -1)));
-        assert_eq!(Some(false), rows.add_through(Coord(2, -1), Coord(-1, 2)));
-
-        assert_eq!(Some(()), rows.add_head_on(Coord(0, s)));
-        assert_eq!(Some(()), rows.add_reflection(Coord(1, s)));
-        assert_eq!(Some(false), rows.add_through(Coord(2, s), Coord(s, 2)));
-
-        assert_eq!(Some(Deflection::HeadOn), rows.get(Coord(-1, 0)));
-        assert_eq!(Some(Deflection::Reflect), rows.get(Coord(-1, 1)));
-        assert_eq!(Some(Deflection::Through(BeamId(1))), rows.get(Coord(-1, 2)));
-
-        assert_eq!(Some(Deflection::HeadOn), rows.get(Coord(s, 0),));
-        assert_eq!(Some(Deflection::Reflect), rows.get(Coord(s, 1),));
-        assert_eq!(Some(Deflection::Through(BeamId(2))), rows.get(Coord(s, 2),));
-
-        assert_eq!(Some(Deflection::HeadOn), rows.get(Coord(0, -1)));
-        assert_eq!(Some(Deflection::Reflect), rows.get(Coord(1, -1)));
-        assert_eq!(Some(Deflection::Through(BeamId(1))), rows.get(Coord(2, -1)));
-
-        assert_eq!(Some(Deflection::HeadOn), rows.get(Coord(0, s),));
-        assert_eq!(Some(Deflection::Reflect), rows.get(Coord(1, s),));
-        assert_eq!(Some(Deflection::Through(BeamId(2))), rows.get(Coord(2, s),));
-    }
-
-    #[test]
     fn edge_rows_eq() {
         let s = 4;
         let mut er1 = EdgeRows::new(s.try_into().unwrap());
@@ -1428,7 +1456,53 @@ mod tests {
         er2.add_head_on(Coord(-1, 2));
         assert_eq!(er1, er2);
 
-        // TODO: add throughs
+        er2.add_reflection(Coord(-1, 3));
+        assert_ne!(er2, er1);
+        er1.add_reflection(Coord(-1, 3));
+        assert_eq!(er2, er1);
+
+        er1.add_reflection(Coord(-1, 1));
+        er1.add_reflection(Coord(0, -1));
+        assert_ne!(er1, er2);
+        er2.add_reflection(Coord(-1, 1));
+        er2.add_reflection(Coord(0, -1));
+        assert_eq!(er1, er2);
+        er1.add_reflection(Coord(0, -1));
+        assert_eq!(er1, er2);
+
+        er1.add_head_on(Coord(s, 0));
+        assert_ne!(er1, er2);
+        er2.add_head_on(Coord(s, 0));
+        assert_eq!(er1, er2);
+
+        er1.add_reflection(Coord(1, s));
+        assert_ne!(er1, er2);
+        er2.add_reflection(Coord(1, s));
+        assert_eq!(er1, er2);
+
+        er1.add_through(Coord(2, -1), Coord(s, 2));
+        assert_ne!(er1, er2);
+        er1.add_through(Coord(2, s), Coord(s, 1));
+        assert_ne!(er1, er2);
+        er2.add_through(Coord(2, s), Coord(s, 1));
+        assert_ne!(er1, er2);
+        er2.add_through(Coord(2, -1), Coord(s, 2));
+        assert_eq!(er1, er2);
+
+        er1.add_head_on(Coord(1, -1));
+        er2.add_reflection(Coord(1, -1));
+        assert_ne!(er1, er2);
+
+        let mut er1 = EdgeRows::new(s.try_into().unwrap());
+        let mut er2 = EdgeRows::new(s.try_into().unwrap());
+        er1.add_through(Coord(2, -1), Coord(s, 2));
+        assert_ne!(er1, er2);
+        er2.add_through(Coord(2, -1), Coord(s, 1));
+        assert_ne!(er1, er2);
+        er1.add_through(Coord(2, s), Coord(s, 1));
+        assert_ne!(er2, er1);
+        er2.add_through(Coord(2, s), Coord(s, 2));
+        assert_ne!(er1, er2);
     }
 
     #[test]
@@ -1514,6 +1588,8 @@ mod tests {
         assert_eq!(Ok(Beam::Reflect), walk_from_edge(&mut balls, Coord(3, 1)));
         assert_eq!(Ok(Beam::HeadOn), walk_from_edge(&mut balls, Coord(3, 2)));
     }
+
+    // Some interesting cases I've found playing a different implementation of this game
 
     #[test]
     fn check_solution_edges_3x_2_1() {
@@ -1601,7 +1677,7 @@ mod tests {
         //    H |O.....O...| H
         //    R |..O.......| H
         //    2 |..........| b
-        //    H |.....O.O..| h
+        //    H |.....O.O..| H
         //    3 |..........| 7
         //    4 |..........| 4
         //    5 |..........| 5
@@ -1640,34 +1716,817 @@ mod tests {
         assert_eq!(Ok(Deflection::Reflect), g.get_edge(Coord(10, 6)));
         assert_eq!(Ok(Deflection::HeadOn), g.get_edge(Coord(10, 7)));
 
-        // TODO: check for throughs in an ID agnostic manner
+        let mut expected = EdgeRows::new(GridSize(10));
+
+        // unused lines left to make copying easier
+
+        // top side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 0)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 2)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 3)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 4)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 5)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 6)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 7)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 8)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 9)));
+
+        // left side head/reflect
+        // assert_eq!(Some(()), expected.add_head_on(Coord(0, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(1, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(2, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(3, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(4, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(5, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(6, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(7, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(8, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(9, -1)));
+
+        // right side head/reflect
+        // assert_eq!(Some(()), expected.add_head_on(Coord(0, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(1, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(2, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(3, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(4, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(5, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(6, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(7, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(8, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(9, 10)));
+
+        // bottom side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 0)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 2)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 3)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 4)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 5)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(10, 6)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 7)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 8)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 9)));
+
+        // throughs from left, then top, then right, then bottom
+        assert_eq!(Some(true), expected.add_through(Coord(0, -1), Coord(-1, 4)));
+        assert_eq!(Some(true), expected.add_through(Coord(5, -1), Coord(10, 1)));
+        assert_eq!(Some(true), expected.add_through(Coord(7, -1), Coord(10, 4)));
+        assert_eq!(Some(true), expected.add_through(Coord(8, -1), Coord(8, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(9, -1), Coord(9, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 1), Coord(10, 3)));
+        assert_eq!(
+            Some(false),
+            expected.add_through(Coord(-1, 4), Coord(0, -1))
+        );
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 6), Coord(0, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 7), Coord(2, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 8), Coord(5, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 9), Coord(10, 9)));
+        assert_eq!(
+            Some(false),
+            expected.add_through(Coord(-1, 1), Coord(10, 3))
+        );
+        assert_eq!(Some(true), expected.add_through(Coord(7, 10), Coord(10, 8)));
+
+        let expected = expected;
+
+        // ensure no empty edges
+        assert_eq!(false, expected.are_empty_edges());
+        assert_eq!(false, g.edges.are_empty_edges());
+
+        // ensure edge rows are equal
+        assert_eq!(expected, g.edges);
     }
 
     #[test]
-    fn coord_pair_eq() {
-        let c1 = Coord(-1, 1);
-        let c2 = Coord(2, 3);
-        let c3 = Coord(4, -5);
-        assert_eq!(c1, c1);
-        assert_eq!(c2, c2);
-        assert_ne!(c1, c2);
-        assert_ne!(c2, c1);
-        assert_ne!(c3, c1);
-        assert_ne!(c2, c3);
-        // same coordinates
-        assert_eq!(CoordPair(c1, c1), CoordPair(c1, c1));
-        // same coordinates, different
-        assert_eq!(CoordPair(c1, c2), CoordPair(c1, c2));
-        // same coordinates, different order
-        assert_eq!(CoordPair(c1, c3), CoordPair(c3, c1));
-        // same coordinates, different order
-        assert_eq!(CoordPair(c3, c2), CoordPair(c2, c3));
+    fn check_solution_edges_10x_6_2() {
+        // define a 10x10 grid, with 10 balls, and expected edges
+        //       HHRRHRH123
+        //      +----------+
+        //    H |....O.....| H
+        //    H |..........| 1
+        //    H |......O...| H
+        //    R |..........| 4
+        //    H |OO.O.O....| H
+        //    H |O.........| 5
+        //    R |.O........| H
+        //    H |..........| H
+        //    R |..O.......| H
+        //    H |O.........| 6
+        //      +----------+
+        //       HRH6RH5423
 
-        // different coordinates
-        assert_ne!(CoordPair(c1, c1), CoordPair(c2, c2));
-        // one common coordinate, same position
-        assert_ne!(CoordPair(c1, c2), CoordPair(c3, c2));
-        // one common coordinate, different position
-        assert_ne!(CoordPair(c1, c2), CoordPair(c2, c3));
+        let mut g = Grid::new(10).unwrap();
+        g.add_ball_solution(Point(0, 4)).unwrap();
+        g.add_ball_solution(Point(2, 6)).unwrap();
+        g.add_ball_solution(Point(4, 0)).unwrap();
+        g.add_ball_solution(Point(4, 1)).unwrap();
+        g.add_ball_solution(Point(4, 3)).unwrap();
+        g.add_ball_solution(Point(4, 5)).unwrap();
+        g.add_ball_solution(Point(5, 0)).unwrap();
+        g.add_ball_solution(Point(6, 1)).unwrap();
+        g.add_ball_solution(Point(8, 2)).unwrap();
+        g.add_ball_solution(Point(9, 0)).unwrap();
+        g.generate_solution_edges().unwrap();
+
+        let mut expected = EdgeRows::new(GridSize(10));
+
+        // unused lines left to make copying easier
+
+        // top side head
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 0)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 2)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 3)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 4)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 5)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 6)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 7)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 8)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 9)));
+
+        // top side reflect
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 0)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(-1, 2)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(-1, 3)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 4)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(-1, 5)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 6)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 7)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 8)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 9)));
+
+        // left side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(0, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(1, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(2, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(3, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(4, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(5, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(6, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(7, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(8, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(9, -1)));
+
+        // right side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(0, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(1, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(2, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(3, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(4, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(5, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(6, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(7, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(8, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(9, 10)));
+
+        // bottom side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 0)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(10, 1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 2)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 3)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(10, 4)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 5)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(10, 6)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 7)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 8)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 9)));
+
+        // throughs from left, then top, then right, then bottom
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 7), Coord(1, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 8), Coord(10, 8)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 9), Coord(10, 9)));
+        assert_eq!(Some(true), expected.add_through(Coord(3, 10), Coord(10, 7)));
+        assert_eq!(Some(true), expected.add_through(Coord(5, 10), Coord(10, 6)));
+        assert_eq!(Some(true), expected.add_through(Coord(9, 10), Coord(10, 3)));
+
+        let expected = expected;
+
+        // ensure no empty edges
+        assert_eq!(false, expected.are_empty_edges());
+        assert_eq!(false, g.edges.are_empty_edges());
+
+        // ensure edge rows are equal
+        assert_eq!(expected, g.edges);
+    }
+
+    #[test]
+    fn check_solution_edges_10x_6_3() {
+        // define a 10x10 grid, with 7 balls, and expected edges
+        //       HRHRHH65HH
+        //      +----------+
+        //    R |..O.......| H
+        //    H |O.........| 6
+        //    R |.....O....| R
+        //    1 |.........O| H
+        //    H |..........| R
+        //    H |...O......| H
+        //    H |...O......| H
+        //    H |..........| 4
+        //    H |..O.......| H
+        //    2 |..........| 3
+        //      +----------+
+        //       H2H34HH51H
+
+        let mut g = Grid::new(10).unwrap();
+        g.add_ball_solution(Point(0, 2)).unwrap();
+        g.add_ball_solution(Point(1, 0)).unwrap();
+        g.add_ball_solution(Point(2, 5)).unwrap();
+        g.add_ball_solution(Point(3, 9)).unwrap();
+        g.add_ball_solution(Point(5, 3)).unwrap();
+        g.add_ball_solution(Point(6, 3)).unwrap();
+        g.add_ball_solution(Point(8, 2)).unwrap();
+        g.generate_solution_edges().unwrap();
+
+        let mut expected = EdgeRows::new(GridSize(10));
+
+        // unused lines left to make copying easier
+
+        // top side head
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 0)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 2)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 3)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 4)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 5)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 6)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 7)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 8)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 9)));
+
+        // top side reflect
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 0)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(-1, 1)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 2)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(-1, 3)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 4)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 5)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 6)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 7)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 8)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 9)));
+
+        // left side head/reflect
+        assert_eq!(Some(()), expected.add_reflection(Coord(0, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(1, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(2, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(3, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(4, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(5, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(6, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(7, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(8, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(9, -1)));
+
+        // right side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(0, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(1, 10)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(2, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(3, 10)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(4, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(5, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(6, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(7, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(8, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(9, 10)));
+
+        // bottom side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 0)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 2)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 3)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 4)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 5)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 6)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 7)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 8)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 9)));
+
+        // throughs from left, then top, then right, then bottom
+        assert_eq!(Some(true), expected.add_through(Coord(3, -1), Coord(10, 8)));
+        assert_eq!(Some(true), expected.add_through(Coord(9, -1), Coord(10, 1)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 3), Coord(9, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 4), Coord(7, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 7), Coord(-1, 7)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 6), Coord(1, 10)));
+
+        let expected = expected;
+
+        // ensure no empty edges
+        assert_eq!(false, expected.are_empty_edges());
+        assert_eq!(false, g.edges.are_empty_edges());
+
+        // ensure edge rows are equal
+        assert_eq!(expected, g.edges);
+    }
+
+    #[test]
+    fn check_solution_edges_10x_6_4() {
+        // define a 10x10 grid, with 5 balls, and expected edges
+        //       H43Hbc87a9
+        //      +----------+
+        //    1 |..........| 1
+        //    2 |..........| 2
+        //    3 |..........| b
+        //    H |...O......| H
+        //    R |..........| R
+        //    4 |...O......| H
+        //    R |..O.......| H
+        //    H |O.........| c
+        //    R |....O.....| H
+        //    5 |..........| 6
+        //      +----------+
+        //       HHH5H687a9
+
+        let mut g = Grid::new(10).unwrap();
+        g.add_ball_solution(Point(3, 3)).unwrap();
+        g.add_ball_solution(Point(5, 3)).unwrap();
+        g.add_ball_solution(Point(6, 2)).unwrap();
+        g.add_ball_solution(Point(7, 0)).unwrap();
+        g.add_ball_solution(Point(8, 4)).unwrap();
+        g.generate_solution_edges().unwrap();
+
+        let mut expected = EdgeRows::new(GridSize(10));
+
+        // unused lines left to make copying easier
+
+        // top side head
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 0)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 2)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(-1, 3)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 4)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 5)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 6)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 7)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 8)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(-1, 9)));
+
+        // top side reflect
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 0)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 1)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 2)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 3)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 4)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 5)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 6)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 7)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 8)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(-1, 9)));
+
+        // left side head/reflect
+        // assert_eq!(Some(()), expected.add_reflection(Coord(0, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(1, -1)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(2, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(3, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(4, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(5, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(6, -1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(7, -1)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(8, -1)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(9, -1)));
+
+        // right side head/reflect
+        // assert_eq!(Some(()), expected.add_head_on(Coord(0, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(1, 10)));
+        // assert_eq!(Some(()), expected.add_reflection(Coord(2, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(3, 10)));
+        assert_eq!(Some(()), expected.add_reflection(Coord(4, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(5, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(6, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(7, 10)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(8, 10)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(9, 10)));
+
+        // bottom side head/reflect
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 0)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 1)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 2)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 3)));
+        assert_eq!(Some(()), expected.add_head_on(Coord(10, 4)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 5)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 6)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 7)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 8)));
+        // assert_eq!(Some(()), expected.add_head_on(Coord(10, 9)));
+
+        // throughs from left, then top, then right, then bottom
+        assert_eq!(Some(true), expected.add_through(Coord(0, -1), Coord(0, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(1, -1), Coord(1, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(2, -1), Coord(-1, 2)));
+        assert_eq!(Some(true), expected.add_through(Coord(5, -1), Coord(-1, 1)));
+        assert_eq!(Some(true), expected.add_through(Coord(9, -1), Coord(10, 3)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 5), Coord(9, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 6), Coord(-1, 6)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 7), Coord(-1, 7)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 8), Coord(-1, 8)));
+        assert_eq!(Some(true), expected.add_through(Coord(10, 9), Coord(-1, 9)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 4), Coord(2, 10)));
+        assert_eq!(Some(true), expected.add_through(Coord(-1, 5), Coord(7, 10)));
+
+        let expected = expected;
+
+        // ensure no empty edges
+        assert_eq!(false, expected.are_empty_edges());
+        assert_eq!(false, g.edges.are_empty_edges());
+
+        // ensure edge rows are equal
+        assert_eq!(expected, g.edges);
+    }
+
+    #[test]
+    fn check_solution_edges_10x_6_5() {
+        // define a 10x10 grid, with 8 balls, and expected edges
+        let input = r#"
+         4H3H91HHRH
+        +----------+
+      H |.........O| H
+      1 |..........| R
+      H |......O...| H
+      2 |........O.| H
+      3 |..........| 8
+      H |...O......| H
+      4 |..........| 2
+      H |.O..O.....| 9
+      5 |......O...| 8
+      6 |........O.| H
+        +----------+
+         5H77H6HRHR
+   "#;
+
+        let mut got = Grid::new(10).unwrap();
+        got.add_ball_solution(Point(0, 9)).unwrap();
+        got.add_ball_solution(Point(2, 6)).unwrap();
+        got.add_ball_solution(Point(3, 8)).unwrap();
+        got.add_ball_solution(Point(5, 3)).unwrap();
+        got.add_ball_solution(Point(7, 1)).unwrap();
+        got.add_ball_solution(Point(7, 4)).unwrap();
+        got.add_ball_solution(Point(8, 6)).unwrap();
+        got.add_ball_solution(Point(9, 8)).unwrap();
+        got.generate_solution_edges().unwrap();
+
+        let mut expected = parse_grid(input, 10).unwrap();
+
+        assert_eq!(expected.edges, got.edges);
+        assert_eq!(expected.solution, got.solution);
+
+        // ensure no empty edges
+        assert_eq!(false, expected.edges.are_empty_edges());
+        assert_eq!(false, got.edges.are_empty_edges());
+    }
+
+    #[test]
+    fn check_solution_edges_10x_6_6() {
+        // define a 10x10 grid, with 8 balls, and expected edges
+        let input = r#"
+         21HHRHRH8H
+        +----------+
+      1 |.....O....| H
+      2 |..O.......| 8
+      H |.O.....O..| H
+      3 |.......O..| R
+      H |.......O.O| H
+      H |..........| R
+      H |......O...| H
+      4 |..........| 7
+      5 |..........| 5
+      6 |..........| 6
+        +----------+
+         3HHHH4H7RH
+   "#;
+
+        let expected = parse_grid(input, 10).unwrap();
+
+        let mut got = Grid::new(10).unwrap();
+
+        for p in expected.solution.iter() {
+            got.add_ball_solution(p).unwrap();
+        }
+
+        got.generate_solution_edges().unwrap();
+
+        assert_eq!(expected.edges, got.edges);
+        assert_eq!(expected.solution, got.solution);
+
+        // ensure no empty edges
+        assert_eq!(false, expected.edges.are_empty_edges());
+        assert_eq!(false, got.edges.are_empty_edges());
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ThroughHalf {
+        id: BeamId,
+        edge: Coord,
+    }
+
+    use std::cmp::Ordering;
+
+    impl std::cmp::PartialOrd for ThroughHalf {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl std::cmp::Ord for ThroughHalf {
+        fn cmp(&self, other: &Self) -> Ordering {
+            match self.id.cmp(&other.id) {
+                Ordering::Less => Ordering::Less,
+                Ordering::Greater => Ordering::Greater,
+                Ordering::Equal => self.edge.cmp(&other.edge),
+            }
+        }
+    }
+
+    fn parse_edge_character(c: char) -> Option<Deflection> {
+        Some(match c {
+            'H' => Deflection::HeadOn,
+            'R' => Deflection::Reflect,
+            x if x.is_ascii_digit() => Deflection::Through(BeamId(x as u8 - b'0')),
+            x if x.is_ascii_lowercase() => Deflection::Through(BeamId(x as u8 - b'a' + 10)),
+            _ => return None,
+        })
+    }
+
+    // Parse a horizontal edge row (top or bottom) from a line of ASCII, placing the result into the grid
+    // Through edges are ignored
+    fn parse_horizontal_edge_row(
+        er: &mut EdgeRows,
+        s: Side,
+        line: &str,
+    ) -> Option<Vec<ThroughHalf>> {
+        let row = match s {
+            Side::Top => -1,
+            Side::Bottom => er.size.into(),
+            _ => return None,
+        };
+        let line = line.trim();
+        if line.len() != er.size.into() {
+            return None;
+        }
+        let mut throughs = Vec::new();
+        for (i, c) in line.chars().enumerate() {
+            let edge = Coord(row, i as isize);
+            match parse_edge_character(c) {
+                Some(Deflection::HeadOn) => er.add_head_on(edge)?,
+                Some(Deflection::Reflect) => er.add_reflection(edge)?,
+                Some(Deflection::Through(id)) => throughs.push(ThroughHalf { edge, id }),
+                _ => return None,
+            }
+        }
+        Some(throughs)
+    }
+
+    #[test]
+    fn test_parse_horizontal_edge_row() {
+        let top = "  H6HR1H9ab8 ";
+        let bottom = "  HRH6RH5423 ";
+        let mut er = EdgeRows::new(GridSize::new(10).unwrap());
+        let topThroughs = vec![
+            ThroughHalf {
+                id: BeamId(6),
+                edge: Coord(-1, 1),
+            },
+            ThroughHalf {
+                id: BeamId(1),
+                edge: Coord(-1, 4),
+            },
+            ThroughHalf {
+                id: BeamId(9),
+                edge: Coord(-1, 6),
+            },
+            ThroughHalf {
+                id: BeamId(10),
+                edge: Coord(-1, 7),
+            },
+            ThroughHalf {
+                id: BeamId(11),
+                edge: Coord(-1, 8),
+            },
+            ThroughHalf {
+                id: BeamId(8),
+                edge: Coord(-1, 9),
+            },
+        ];
+        let bottomThroughs = vec![
+            ThroughHalf {
+                id: BeamId(6),
+                edge: Coord(10, 3),
+            },
+            ThroughHalf {
+                id: BeamId(5),
+                edge: Coord(10, 6),
+            },
+            ThroughHalf {
+                id: BeamId(4),
+                edge: Coord(10, 7),
+            },
+            ThroughHalf {
+                id: BeamId(2),
+                edge: Coord(10, 8),
+            },
+            ThroughHalf {
+                id: BeamId(3),
+                edge: Coord(10, 9),
+            },
+        ];
+        assert_eq!(
+            Some(topThroughs),
+            parse_horizontal_edge_row(&mut er, Side::Top, top)
+        );
+        assert_eq!(
+            Some(bottomThroughs),
+            parse_horizontal_edge_row(&mut er, Side::Bottom, bottom)
+        );
+
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(-1, 0)));
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(-1, 2)));
+        assert_eq!(Some(Deflection::Reflect), er.get(Coord(-1, 3)));
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(-1, 5)));
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(10, 0)));
+        assert_eq!(Some(Deflection::Reflect), er.get(Coord(10, 1)));
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(10, 2)));
+        assert_eq!(Some(Deflection::Reflect), er.get(Coord(10, 4)));
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(10, 5)));
+    }
+
+    // Parse a row of a grid text representation into the grid, added left and right edges and any balls.
+    fn parse_grid_row(
+        edges: &mut EdgeRows,
+        balls: &mut Balls,
+        row: usize,
+        line: &str,
+    ) -> Option<Vec<ThroughHalf>> {
+        let line = line.trim();
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 3 {
+            return None;
+        }
+        let mut throughs = Vec::new();
+        let left = parts[0].trim().chars().nth(0)?;
+        let edge = Coord(row as isize, -1);
+        match parse_edge_character(left) {
+            Some(Deflection::HeadOn) => edges.add_head_on(edge)?,
+            Some(Deflection::Reflect) => edges.add_reflection(edge)?,
+            Some(Deflection::Through(id)) => throughs.push(ThroughHalf { edge, id }),
+            _ => return None,
+        }
+        let right = parts[2].trim().chars().nth(0)?;
+        let edge = Coord(row as isize, edges.size.into());
+        match parse_edge_character(right) {
+            Some(Deflection::HeadOn) => edges.add_head_on(edge)?,
+            Some(Deflection::Reflect) => edges.add_reflection(edge)?,
+            Some(Deflection::Through(id)) => throughs.push(ThroughHalf { edge, id }),
+            _ => return None,
+        }
+
+        let middle = parts[1].trim().trim_matches('|');
+        if middle.len() != edges.size.into() {
+            return None;
+        }
+        for (c, d) in middle.chars().enumerate() {
+            match d {
+                '.' => continue,
+                'O' => balls.add(Point(row, c)).ok()?,
+                _ => return None,
+            }
+        }
+        Some(throughs)
+    }
+
+    #[test]
+    fn test_parse_grid_row() {
+        let r0 = " H |OO.O.O....| 5";
+        let r1 = "   R |.O........| H";
+        let gs = GridSize::new(10).unwrap();
+        let mut er = EdgeRows::new(gs);
+        let mut balls = Balls::new(gs);
+        let through0 = vec![ThroughHalf {
+            id: BeamId(5),
+            edge: Coord(0, 10),
+        }];
+        let through1 = vec![];
+        assert_eq!(Some(through0), parse_grid_row(&mut er, &mut balls, 0, r0));
+        assert_eq!(Some(through1), parse_grid_row(&mut er, &mut balls, 1, r1));
+
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(0, -1)));
+        assert_eq!(Some(Deflection::Reflect), er.get(Coord(1, -1)));
+        assert_eq!(Some(Deflection::HeadOn), er.get(Coord(1, gs.into())));
+
+        assert_eq!(Some(true), balls.get(Point(0, 0)));
+        assert_eq!(Some(true), balls.get(Point(0, 1)));
+        assert_eq!(Some(false), balls.get(Point(0, 2)));
+        assert_eq!(Some(true), balls.get(Point(0, 3)));
+        assert_eq!(Some(false), balls.get(Point(0, 4)));
+        assert_eq!(Some(true), balls.get(Point(0, 5)));
+        assert_eq!(Some(false), balls.get(Point(0, 6)));
+        assert_eq!(Some(false), balls.get(Point(0, 7)));
+        assert_eq!(Some(false), balls.get(Point(0, 8)));
+        assert_eq!(Some(false), balls.get(Point(0, 9)));
+        assert_eq!(Some(false), balls.get(Point(1, 0)));
+        assert_eq!(Some(true), balls.get(Point(1, 1)));
+        assert_eq!(Some(false), balls.get(Point(1, 2)));
+        assert_eq!(Some(false), balls.get(Point(1, 3)));
+        assert_eq!(Some(false), balls.get(Point(1, 4)));
+        assert_eq!(Some(false), balls.get(Point(1, 5)));
+        assert_eq!(Some(false), balls.get(Point(1, 6)));
+        assert_eq!(Some(false), balls.get(Point(1, 7)));
+        assert_eq!(Some(false), balls.get(Point(1, 8)));
+        assert_eq!(Some(false), balls.get(Point(1, 9)));
+    }
+
+    // Parse a grid represented as ASCII into a Grid object
+    // Format example:
+    //     HRH
+    //    +---+
+    //  H |O.O| H
+    //  R |...| R
+    //  1 |...| 1
+    //    +---+
+    //     HRH
+    fn parse_grid(text: &str, size: usize) -> Option<Grid> {
+        let mut g = Grid::new(size).ok()?;
+        let text = text.trim();
+        let mut throughs = Vec::new();
+        for (i, line) in text.lines().enumerate() {
+            throughs.append(&mut match i {
+                // first line is top row
+                0 => parse_horizontal_edge_row(&mut g.edges, Side::Top, line)?,
+                // skip border line, then we have grid lines
+                i if i >= 2 && i <= size + 1 => {
+                    parse_grid_row(&mut g.edges, &mut g.solution, i - 2, line)?
+                }
+                // skip border line, then we have the bottom edge
+                i if i == size + 3 => parse_horizontal_edge_row(&mut g.edges, Side::Bottom, line)?,
+                _ => continue,
+            });
+        }
+
+        // sort ThroughHalfs, which is first by ID. So we should get sequential IDs coming through in pairs
+        throughs.sort();
+
+        while throughs.len() > 0 {
+            let t1 = throughs.pop().unwrap();
+            // if there isn't one, it's an error so return none
+            let t2 = throughs.pop()?;
+            if t1.id != t2.id {
+                return None;
+            }
+            if Some(true) != g.edges.add_through(t1.edge, t2.edge) {
+                return None;
+            }
+        }
+        Some(g)
+    }
+
+    #[test]
+    fn test_parse_grid() {
+        let input = r#"
+             HRH
+            +---+
+          H |O.O| H
+          R |...| R
+          1 |...| 1
+            +---+
+             HRH
+        "#;
+        let gs = GridSize::new(3).unwrap();
+        let mut expected = Grid::new(gs.into()).unwrap();
+        assert_eq!(Ok(()), expected.add_ball_solution(Point(0, 0)));
+        assert_eq!(Ok(()), expected.add_ball_solution(Point(0, 2)));
+        assert_eq!(Ok(()), expected.generate_solution_edges());
+
+        let got = parse_grid(input, 3).unwrap();
+        assert_eq!(expected.size, got.size);
+        assert_eq!(expected.edges, got.edges);
+
+        assert_eq!(Some(true), got.is_ball(Point(0, 0), BallType::Solution));
+        assert_eq!(Some(false), got.is_ball(Point(0, 1), BallType::Solution));
+        assert_eq!(Some(true), got.is_ball(Point(0, 2), BallType::Solution));
+        assert_eq!(Some(false), got.is_ball(Point(1, 0), BallType::Solution));
+        assert_eq!(Some(false), got.is_ball(Point(1, 1), BallType::Solution));
+        assert_eq!(Some(false), got.is_ball(Point(1, 2), BallType::Solution));
+        assert_eq!(Some(false), got.is_ball(Point(2, 0), BallType::Solution));
+        assert_eq!(Some(false), got.is_ball(Point(2, 1), BallType::Solution));
+        assert_eq!(Some(false), got.is_ball(Point(2, 2), BallType::Solution));
+        assert_eq!(Ok(Deflection::HeadOn), got.get_edge(Coord(-1, 0)));
+        assert_eq!(Ok(Deflection::Reflect), got.get_edge(Coord(-1, 1)));
+        assert_eq!(Ok(Deflection::HeadOn), got.get_edge(Coord(-1, 2)));
+        assert_eq!(Ok(Deflection::HeadOn), got.get_edge(Coord(3, 0)));
+        assert_eq!(Ok(Deflection::Reflect), got.get_edge(Coord(3, 1)));
+        assert_eq!(Ok(Deflection::HeadOn), got.get_edge(Coord(3, 2)));
+        assert_eq!(Ok(Deflection::HeadOn), got.get_edge(Coord(0, -1)));
+        assert_eq!(Ok(Deflection::Reflect), got.get_edge(Coord(1, -1)));
+        assert_eq!(Ok(Deflection::HeadOn), got.get_edge(Coord(0, 3)));
+        assert_eq!(Ok(Deflection::Reflect), got.get_edge(Coord(1, 3)));
+        assert_eq!(
+            Ok(Deflection::Through(BeamId(1))),
+            got.get_edge(Coord(2, -1))
+        );
+        assert_eq!(
+            Ok(Deflection::Through(BeamId(1))),
+            got.get_edge(Coord(2, 3))
+        );
     }
 }
