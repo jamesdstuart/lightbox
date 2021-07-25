@@ -83,6 +83,35 @@ impl GridSize {
             _ => false,
         }
     }
+
+    fn points(&self) -> PointIter {
+        PointIter::new(self.0)
+    }
+}
+
+struct PointIter {
+    size: usize,
+    count: usize,
+}
+
+impl PointIter {
+    fn new(size: usize) -> PointIter {
+        PointIter { size, count: 0 }
+    }
+}
+
+impl Iterator for PointIter {
+    type Item = Point;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.count < self.size * self.size {
+            let col = self.count % self.size;
+            let row = self.count / self.size;
+            self.count = self.count + 1;
+            Some(Point(row, col))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
