@@ -125,6 +125,10 @@ pub struct Puzzle {
     solution: Balls,
 }
 
+pub struct PuzzleSolution<'a> {
+    puzzle: &'a Puzzle,
+}
+
 #[derive(PartialEq, Eq, Clone, Copy, Debug, PartialOrd, Ord)]
 struct BeamId(u8);
 
@@ -741,7 +745,7 @@ impl Puzzle {
     fn generate_new_puzzle(&mut self) -> Result<(), PuzzleError> {
         let mut rng = rand::thread_rng();
         let min_balls = (self.size.0 / 2) + 1;
-        let max_balls = self.size.0 * 2;
+        let max_balls = self.size.0 + (self.size.0 / 2);
         let mut balls_to_add = rng.gen_range(min_balls..=max_balls);
 
         while balls_to_add > 0 {
@@ -782,12 +786,20 @@ impl Puzzle {
         self.add_ball(p, BallType::Solution)
     }
 
-    pub fn fmt_solution(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn get_solution(&self) -> PuzzleSolution {
+        PuzzleSolution { puzzle: &self }
+    }
+
+    fn fmt_solution(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.fmt_grid(BallType::Solution, f)
     }
 
-    pub fn fmt_guess(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt_guess(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.fmt_grid(BallType::Guess, f)
+    }
+
+    pub fn clear_guess(&mut self) {
+        self.guess.clear();
     }
 
     fn at_edge(&self, c: Coord) -> bool {
@@ -1031,7 +1043,13 @@ fn format_edge_row(row: &EdgeRow, f: &mut std::fmt::Formatter<'_>) -> std::fmt::
 
 impl std::fmt::Display for Puzzle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.fmt_grid(BallType::Guess, f)
+        self.fmt_guess(f)
+    }
+}
+
+impl std::fmt::Display for PuzzleSolution<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.puzzle.fmt_solution(f)
     }
 }
 
