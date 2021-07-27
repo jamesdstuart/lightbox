@@ -350,7 +350,7 @@ impl EdgeRows {
         Some(true)
     }
 
-    fn equivalent_edge_row(this: &EdgeRow, other: &EdgeRow) -> bool {
+    fn equivalent_single_edge_row(this: &EdgeRow, other: &EdgeRow) -> bool {
         // check length
         if this.len() != other.len() {
             return false;
@@ -363,11 +363,11 @@ impl EdgeRows {
         true
     }
 
-    fn equivalent_edge_rows(&self, other: &Self) -> bool {
-        EdgeRows::equivalent_edge_row(&self.top, &other.top)
-            && EdgeRows::equivalent_edge_row(&self.left, &other.left)
-            && EdgeRows::equivalent_edge_row(&self.right, &other.right)
-            && EdgeRows::equivalent_edge_row(&self.bottom, &other.bottom)
+    fn equivalent_edges(&self, other: &Self) -> bool {
+        EdgeRows::equivalent_single_edge_row(&self.top, &other.top)
+            && EdgeRows::equivalent_single_edge_row(&self.left, &other.left)
+            && EdgeRows::equivalent_single_edge_row(&self.right, &other.right)
+            && EdgeRows::equivalent_single_edge_row(&self.bottom, &other.bottom)
     }
 
     fn are_empty_edges(&self) -> bool {
@@ -386,7 +386,7 @@ impl PartialEq for EdgeRows {
         (self.size == other.size)
             && (self.through_count == other.through_count)
             && (self.through == other.through)
-            && (self.equivalent_edge_rows(other))
+            && (self.equivalent_edges(other))
     }
 }
 
@@ -838,8 +838,12 @@ impl Puzzle {
     }
 
     pub fn check_guess(&self) -> Result<bool, PuzzleError> {
-        // TODO: check guess by creating a temporary EdgeRows, generating them based off guess balls, and checking for equivalence against solution edges
-        unimplemented!();
+        // create temporary set of edges
+        let mut guess = EdgeRows::new(self.size);
+        // generate edge values based on the guess balls
+        generate_edges(&self.guess, &mut guess)?;
+        // check if the edges match the solution
+        Ok(guess == self.edges)
     }
 }
 
@@ -2248,6 +2252,50 @@ mod tests {
         // ensure no empty edges
         assert_eq!(false, expected.edges.are_empty_edges());
         assert_eq!(false, got.edges.are_empty_edges());
+    }
+
+    #[test]
+    fn check_guess_attempt_solution_edges_10x_6_6() {
+        // define a 10x10 grid, with 8 balls, and expected edges
+        let input = r#"
+         21HHRHRH8H
+        +----------+
+      1 |.....O....| H
+      2 |..O.......| 8
+      H |.O.....O..| H
+      3 |.......O..| R
+      H |.......O.O| H
+      H |..........| R
+      H |......O...| H
+      4 |..........| 7
+      5 |..........| 5
+      6 |..........| 6
+        +----------+
+         3HHHH4H7RH
+   "#;
+
+        let expected = parse_grid(input, 10).unwrap();
+
+        let mut got = Puzzle::new_empty(10).unwrap();
+
+        for p in expected.solution.iter() {
+            got.add_ball_solution(p).unwrap();
+        }
+
+        got.generate_solution_edges().unwrap();
+
+        assert_eq!(expected.edges, got.edges);
+        assert_eq!(expected.solution, got.solution);
+
+        // ensure no empty edges
+        assert_eq!(false, expected.edges.are_empty_edges());
+        assert_eq!(false, got.edges.are_empty_edges());
+
+        // add guess balls
+        for b in got.solution.iter() {
+            got.add_ball_guess(b).unwrap();
+        }
+        assert_eq!(Ok(true), got.check_guess());
     }
 
     #[derive(Debug, PartialEq, Eq)]
