@@ -3,6 +3,8 @@ use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::ops::Deref;
 
+use rand::Rng;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 struct GridSize(usize);
 
@@ -25,16 +27,17 @@ impl From<&GridSize> for usize {
 }
 
 impl TryFrom<usize> for GridSize {
-    type Error = GridError;
+    type Error = PuzzleError;
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        GridSize::new(value).ok_or(GridError::TooBig)
+        GridSize::new(value).ok_or(PuzzleError::TooBigOrSmall)
     }
 }
 
 impl TryFrom<isize> for GridSize {
-    type Error = GridError;
+    type Error = PuzzleError;
     fn try_from(value: isize) -> Result<Self, Self::Error> {
-        GridSize::new(value.try_into().or(Err(GridError::TooBig))?).ok_or(GridError::TooBig)
+        GridSize::new(value.try_into().or(Err(PuzzleError::TooBigOrSmall))?)
+            .ok_or(PuzzleError::TooBigOrSmall)
     }
 }
 
@@ -53,7 +56,7 @@ impl Deref for GridSize {
 
 impl GridSize {
     fn new(size: usize) -> Option<GridSize> {
-        if size > Grid::MAX_SIZE {
+        if size > Puzzle::MAX_SIZE || size < Puzzle::MIN_SIZE {
             None
         } else {
             Some(GridSize(size))
@@ -115,7 +118,7 @@ impl Iterator for PointIter {
 }
 
 #[derive(Debug)]
-pub struct Grid {
+pub struct Puzzle {
     size: GridSize,
     edges: EdgeRows,
     guess: Balls,
@@ -178,26 +181,26 @@ impl Balls {
         }
     }
 
-    fn add(&mut self, p: Point) -> Result<(), GridError> {
+    fn add(&mut self, p: Point) -> Result<(), PuzzleError> {
         let i = self
             .size
             .point_to_index(p)
-            .ok_or(GridError::BadCoordinates)?;
+            .ok_or(PuzzleError::BadCoordinates)?;
         if self.balls[i] {
-            return Err(GridError::DuplicateBall);
+            return Err(PuzzleError::DuplicateBall);
         }
         self.balls[i] = true;
         self.count += 1;
         Ok(())
     }
 
-    fn remove(&mut self, p: Point) -> Result<(), GridError> {
+    fn remove(&mut self, p: Point) -> Result<(), PuzzleError> {
         let i = self
             .size
             .point_to_index(p)
-            .ok_or(GridError::BadCoordinates)?;
+            .ok_or(PuzzleError::BadCoordinates)?;
         if !self.balls[i] {
-            return Err(GridError::NoSuchBall);
+            return Err(PuzzleError::NoSuchBall);
         }
         self.balls[i] = false;
         self.count -= 1;
@@ -456,10 +459,10 @@ enum BallType {
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-pub enum GridError {
+pub enum PuzzleError {
     BadCoordinates,
     DuplicateBall,
-    TooBig,
+    TooBigOrSmall,
     SomethingWentWrong,
     NoSuchBall,
 }
@@ -709,17 +712,47 @@ impl Direction {
     }
 }
 
-impl Grid {
+impl Puzzle {
     const MAX_SIZE: usize = 20;
+    const MIN_SIZE: usize = 3;
 
-    pub fn new(size: usize) -> Result<Grid, GridError> {
-        let size = GridSize::new(size).ok_or(GridError::TooBig)?;
-        Ok(Grid {
+    pub fn new(size: usize) -> Result<Puzzle, PuzzleError> {
+        let size = GridSize::new(size).ok_or(PuzzleError::TooBigOrSmall)?;
+        let mut p = Puzzle {
+            size,
+            edges: EdgeRows::new(size),
+            guess: Balls::new(size),
+            solution: Balls::new(size),
+        };
+        p.generate_new_puzzle()?;
+        Ok(p)
+    }
+
+    fn new_empty(size: usize) -> Result<Puzzle, PuzzleError> {
+        let size = GridSize::new(size).ok_or(PuzzleError::TooBigOrSmall)?;
+        Ok(Puzzle {
             size,
             edges: EdgeRows::new(size),
             guess: Balls::new(size),
             solution: Balls::new(size),
         })
+    }
+
+    fn generate_new_puzzle(&mut self) -> Result<(), PuzzleError> {
+        let mut rng = rand::thread_rng();
+        let min_balls = (self.size.0 / 2) + 1;
+        let max_balls = self.size.0 * 2;
+        let mut balls_to_add = rng.gen_range(min_balls..=max_balls);
+
+        while balls_to_add > 0 {
+            let p = Point(rng.gen_range(0..self.size.0), rng.gen_range(0..self.size.0));
+            match self.add_ball_solution(p) {
+                Ok(()) => balls_to_add = balls_to_add - 1,
+                Err(PuzzleError::DuplicateBall) => {}
+                Err(x) => return Err(x),
+            };
+        }
+        self.generate_solution_edges()
     }
 
     fn edge_iter(&self) -> Edges {
@@ -734,18 +767,18 @@ impl Grid {
         self.size.coord_inside_grid(c)
     }
 
-    fn add_ball(&mut self, p: Point, t: BallType) -> Result<(), GridError> {
+    fn add_ball(&mut self, p: Point, t: BallType) -> Result<(), PuzzleError> {
         match t {
             BallType::Solution => self.solution.add(p),
             BallType::Guess => self.guess.add(p),
         }
     }
 
-    pub fn add_ball_guess(&mut self, p: Point) -> Result<(), GridError> {
+    pub fn add_ball_guess(&mut self, p: Point) -> Result<(), PuzzleError> {
         self.add_ball(p, BallType::Guess)
     }
 
-    pub fn add_ball_solution(&mut self, p: Point) -> Result<(), GridError> {
+    pub fn add_ball_solution(&mut self, p: Point) -> Result<(), PuzzleError> {
         self.add_ball(p, BallType::Solution)
     }
 
@@ -793,19 +826,24 @@ impl Grid {
         write!(f, "{}\n", self.edges.right[row])
     }
 
-    fn get_edge(&self, edge: Coord) -> Result<Deflection, GridError> {
+    fn get_edge(&self, edge: Coord) -> Result<Deflection, PuzzleError> {
         if !self.at_edge(edge) {
-            return Err(GridError::BadCoordinates);
+            return Err(PuzzleError::BadCoordinates);
         }
-        self.edges.get(edge).ok_or(GridError::BadCoordinates)
+        self.edges.get(edge).ok_or(PuzzleError::BadCoordinates)
     }
 
-    fn generate_solution_edges(&mut self) -> Result<(), GridError> {
+    fn generate_solution_edges(&mut self) -> Result<(), PuzzleError> {
         generate_edges(&self.solution, &mut self.edges)
+    }
+
+    pub fn check_guess(&self) -> Result<bool, PuzzleError> {
+        // TODO: check guess by creating a temporary EdgeRows, generating them based off guess balls, and checking for equivalence against solution edges
+        unimplemented!();
     }
 }
 
-fn generate_edges(balls: &Balls, edge_rows: &mut EdgeRows) -> Result<(), GridError> {
+fn generate_edges(balls: &Balls, edge_rows: &mut EdgeRows) -> Result<(), PuzzleError> {
     // loop through edges
     let edges = edge_rows.edges();
     for edge in edges {
@@ -813,46 +851,46 @@ fn generate_edges(balls: &Balls, edge_rows: &mut EdgeRows) -> Result<(), GridErr
         match edge_rows.get(edge).unwrap() {
             Deflection::Through(_) => continue,
             Deflection::EmptyRow | Deflection::EmptyCol => {}
-            _ => return Err(GridError::SomethingWentWrong),
+            _ => return Err(PuzzleError::SomethingWentWrong),
         };
 
         let r = walk_from_edge(balls, edge)?;
         match r {
             Beam::HeadOn => edge_rows
                 .add_head_on(edge)
-                .ok_or(GridError::SomethingWentWrong)?,
+                .ok_or(PuzzleError::SomethingWentWrong)?,
             Beam::Reflect => edge_rows
                 .add_reflection(edge)
-                .ok_or(GridError::SomethingWentWrong)?,
+                .ok_or(PuzzleError::SomethingWentWrong)?,
             Beam::Edge(other_edge, _) => {
                 if other_edge == edge {
                     edge_rows
                         .add_reflection(edge)
-                        .ok_or(GridError::SomethingWentWrong)?;
+                        .ok_or(PuzzleError::SomethingWentWrong)?;
                 } else {
                     edge_rows
                         .add_through(edge, other_edge)
-                        .ok_or(GridError::SomethingWentWrong)?;
+                        .ok_or(PuzzleError::SomethingWentWrong)?;
                 }
             }
-            _ => return Err(GridError::SomethingWentWrong),
+            _ => return Err(PuzzleError::SomethingWentWrong),
         };
     }
     Ok(())
 }
 
-fn walk_from_edge(balls: &Balls, start: Coord) -> Result<Beam, GridError> {
+fn walk_from_edge(balls: &Balls, start: Coord) -> Result<Beam, PuzzleError> {
     let r = edge_step(balls, start)?;
     let (mut next, mut dir) = match r {
         Beam::HeadOn => return Ok(Beam::HeadOn),
         Beam::Reflect => return Ok(Beam::Reflect),
-        Beam::Edge(_, _) => return Err(GridError::SomethingWentWrong),
+        Beam::Edge(_, _) => return Err(PuzzleError::SomethingWentWrong),
         Beam::Through(n, d) => (n, d),
     };
     loop {
         let r = next_step(
             balls,
-            next.try_into().or(Err(GridError::BadCoordinates))?,
+            next.try_into().or(Err(PuzzleError::BadCoordinates))?,
             dir,
         )?;
         match r {
@@ -864,19 +902,16 @@ fn walk_from_edge(balls: &Balls, start: Coord) -> Result<Beam, GridError> {
                     return Ok(r);
                 }
             }
-            Beam::Reflect => return Err(GridError::SomethingWentWrong),
+            Beam::Reflect => return Err(PuzzleError::SomethingWentWrong),
             Beam::Through(n, d) => {
                 next = n;
                 dir = d;
             }
         };
     }
-
-    // Shouldn't get to this point
-    // Err(GridError::SomethingWentWrong)
 }
 
-fn edge_step(balls: &Balls, start: Coord) -> Result<Beam, GridError> {
+fn edge_step(balls: &Balls, start: Coord) -> Result<Beam, PuzzleError> {
     let dir = match start {
         // top edge
         Coord(-1, _) => Direction::DOWN,
@@ -887,7 +922,7 @@ fn edge_step(balls: &Balls, start: Coord) -> Result<Beam, GridError> {
         // bottom edge
         Coord(x, _) if x == balls.size.into() => Direction::UP,
         // unknown edge
-        _ => return Err(GridError::BadCoordinates),
+        _ => return Err(PuzzleError::BadCoordinates),
     };
     let (side_left, side_right) = dir.get_sides();
     // check cell in front
@@ -896,9 +931,9 @@ fn edge_step(balls: &Balls, start: Coord) -> Result<Beam, GridError> {
         .get(
             (start + dir)
                 .try_into()
-                .or(Err(GridError::BadCoordinates))?,
+                .or(Err(PuzzleError::BadCoordinates))?,
         )
-        .ok_or(GridError::BadCoordinates)?
+        .ok_or(PuzzleError::BadCoordinates)?
     {
         // head on
         return Ok(Beam::HeadOn);
@@ -907,7 +942,7 @@ fn edge_step(balls: &Balls, start: Coord) -> Result<Beam, GridError> {
     // there may not be one, so check if cell exists and a ball is there
     let cell_left = start + dir + side_left;
     if balls.size.coord_inside_grid(&cell_left)
-        && balls.get(cell_left.try_into().or(Err(GridError::BadCoordinates))?) == Some(true)
+        && balls.get(cell_left.try_into().or(Err(PuzzleError::BadCoordinates))?) == Some(true)
     {
         return Ok(Beam::Reflect);
     }
@@ -915,14 +950,14 @@ fn edge_step(balls: &Balls, start: Coord) -> Result<Beam, GridError> {
     // there may not be one, so check if cell exists and a ball is there
     let cell_right = start + dir + side_right;
     if balls.size.coord_inside_grid(&cell_right)
-        && balls.get(cell_right.try_into().or(Err(GridError::BadCoordinates))?) == Some(true)
+        && balls.get(cell_right.try_into().or(Err(PuzzleError::BadCoordinates))?) == Some(true)
     {
         return Ok(Beam::Reflect);
     }
     Ok(Beam::Through(start + dir, dir))
 }
 
-fn next_step(balls: &Balls, start: Point, dir: Coord) -> Result<Beam, GridError> {
+fn next_step(balls: &Balls, start: Point, dir: Coord) -> Result<Beam, PuzzleError> {
     let start: Coord = start.into();
     // check front
     let front = start + dir;
@@ -933,8 +968,8 @@ fn next_step(balls: &Balls, start: Point, dir: Coord) -> Result<Beam, GridError>
     }
     // if there is a ball
     if balls
-        .get(front.try_into().or(Err(GridError::BadCoordinates))?)
-        .ok_or(GridError::BadCoordinates)?
+        .get(front.try_into().or(Err(PuzzleError::BadCoordinates))?)
+        .ok_or(PuzzleError::BadCoordinates)?
     {
         // return head on
         return Ok(Beam::HeadOn);
@@ -948,16 +983,16 @@ fn next_step(balls: &Balls, start: Point, dir: Coord) -> Result<Beam, GridError>
 
     let left_ball = if !left_edge {
         balls
-            .get(left.try_into().or(Err(GridError::BadCoordinates))?)
-            .ok_or(GridError::BadCoordinates)?
+            .get(left.try_into().or(Err(PuzzleError::BadCoordinates))?)
+            .ok_or(PuzzleError::BadCoordinates)?
     } else {
         false
     };
 
     let right_ball = if !right_edge {
         balls
-            .get(right.try_into().or(Err(GridError::BadCoordinates))?)
-            .ok_or(GridError::BadCoordinates)?
+            .get(right.try_into().or(Err(PuzzleError::BadCoordinates))?)
+            .ok_or(PuzzleError::BadCoordinates)?
     } else {
         false
     };
@@ -990,7 +1025,7 @@ fn format_edge_row(row: &EdgeRow, f: &mut std::fmt::Formatter<'_>) -> std::fmt::
     write!(f, "+\n")
 }
 
-impl std::fmt::Display for Grid {
+impl std::fmt::Display for Puzzle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.fmt_grid(BallType::Guess, f)
     }
@@ -1363,7 +1398,7 @@ mod tests {
     #[test]
     fn edges_from_grid() {
         let s = 3;
-        let g = Grid::new(s as usize).unwrap();
+        let g = Puzzle::new_empty(s as usize).unwrap();
         let mut edges = g.edge_iter();
         assert_eq!(Some(Coord(-1, 0)), edges.next());
         assert_eq!(Some(Coord(-1, 1)), edges.next());
@@ -1602,7 +1637,7 @@ mod tests {
         //     +-----------+
         //       1   R   H
 
-        let mut g = Grid::new(3).unwrap();
+        let mut g = Puzzle::new_empty(3).unwrap();
         g.add_ball_solution(Point(0, 1)).unwrap();
         g.add_ball_solution(Point(2, 2)).unwrap();
         g.generate_solution_edges().unwrap();
@@ -1639,7 +1674,7 @@ mod tests {
         //     +-----------+
         //       H   R   H
 
-        let mut g = Grid::new(3).unwrap();
+        let mut g = Puzzle::new_empty(3).unwrap();
         g.add_ball_solution(Point(0, 0)).unwrap();
         g.add_ball_solution(Point(0, 2)).unwrap();
 
@@ -1684,7 +1719,7 @@ mod tests {
         //      +----------+
         //       H2H63HRH78
 
-        let mut g = Grid::new(10).unwrap();
+        let mut g = Puzzle::new_empty(10).unwrap();
         g.add_ball_solution(Point(1, 5)).unwrap();
         g.add_ball_solution(Point(3, 0)).unwrap();
         g.add_ball_solution(Point(3, 6)).unwrap();
@@ -1817,7 +1852,7 @@ mod tests {
         //      +----------+
         //       HRH6RH5423
 
-        let mut g = Grid::new(10).unwrap();
+        let mut g = Puzzle::new_empty(10).unwrap();
         g.add_ball_solution(Point(0, 4)).unwrap();
         g.add_ball_solution(Point(2, 6)).unwrap();
         g.add_ball_solution(Point(4, 0)).unwrap();
@@ -1930,7 +1965,7 @@ mod tests {
         //      +----------+
         //       H2H34HH51H
 
-        let mut g = Grid::new(10).unwrap();
+        let mut g = Puzzle::new_empty(10).unwrap();
         g.add_ball_solution(Point(0, 2)).unwrap();
         g.add_ball_solution(Point(1, 0)).unwrap();
         g.add_ball_solution(Point(2, 5)).unwrap();
@@ -2040,7 +2075,7 @@ mod tests {
         //      +----------+
         //       HHH5H687a9
 
-        let mut g = Grid::new(10).unwrap();
+        let mut g = Puzzle::new_empty(10).unwrap();
         g.add_ball_solution(Point(3, 3)).unwrap();
         g.add_ball_solution(Point(5, 3)).unwrap();
         g.add_ball_solution(Point(6, 2)).unwrap();
@@ -2156,7 +2191,7 @@ mod tests {
          5H77H6HRHR
    "#;
 
-        let mut got = Grid::new(10).unwrap();
+        let mut got = Puzzle::new_empty(10).unwrap();
         got.add_ball_solution(Point(0, 9)).unwrap();
         got.add_ball_solution(Point(2, 6)).unwrap();
         got.add_ball_solution(Point(3, 8)).unwrap();
@@ -2199,7 +2234,7 @@ mod tests {
 
         let expected = parse_grid(input, 10).unwrap();
 
-        let mut got = Grid::new(10).unwrap();
+        let mut got = Puzzle::new_empty(10).unwrap();
 
         for p in expected.solution.iter() {
             got.add_ball_solution(p).unwrap();
@@ -2445,8 +2480,8 @@ mod tests {
     //  1 |...| 1
     //    +---+
     //     HRH
-    fn parse_grid(text: &str, size: usize) -> Option<Grid> {
-        let mut g = Grid::new(size).ok()?;
+    fn parse_grid(text: &str, size: usize) -> Option<Puzzle> {
+        let mut g = Puzzle::new_empty(size).ok()?;
         let text = text.trim();
         let mut throughs = Vec::new();
         for (i, line) in text.lines().enumerate() {
@@ -2492,7 +2527,7 @@ mod tests {
              HRH
         "#;
         let gs = GridSize::new(3).unwrap();
-        let mut expected = Grid::new(gs.into()).unwrap();
+        let mut expected = Puzzle::new_empty(gs.into()).unwrap();
         assert_eq!(Ok(()), expected.add_ball_solution(Point(0, 0)));
         assert_eq!(Ok(()), expected.add_ball_solution(Point(0, 2)));
         assert_eq!(Ok(()), expected.generate_solution_edges());
@@ -2528,5 +2563,11 @@ mod tests {
             Ok(Deflection::Through(BeamId(1))),
             got.get_edge(Coord(2, 3))
         );
+    }
+
+    #[test]
+    fn generate_new_puzzle_with_balls() {
+        let p = Puzzle::new(Puzzle::MIN_SIZE).unwrap();
+        assert_eq!(true, p.solution.count > 0);
     }
 }
