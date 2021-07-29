@@ -812,9 +812,11 @@ impl Puzzle {
 
     fn fmt_grid(&self, t: BallType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         format_edge_row(&self.edges.top, f)?;
+        fmt_horizontal_edge(&self.size, f)?;
         for row in 0..self.size.into() {
             self.format_row(row, t, f)?;
         }
+        fmt_horizontal_edge(&self.size, f)?;
         format_edge_row(&self.edges.bottom, f)
     }
 
@@ -831,7 +833,7 @@ impl Puzzle {
         t: BallType,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
-        write!(f, "{}", self.edges.left[row])?;
+        write!(f, "{} |", self.edges.left[row])?;
         for cell in 0..self.size.into() {
             if self.is_ball(Point(row, cell), t) == Some(true) {
                 write!(f, "O")?;
@@ -839,7 +841,7 @@ impl Puzzle {
                 write!(f, ".")?;
             }
         }
-        write!(f, "{}\n", self.edges.right[row])
+        writeln!(f, "| {}", self.edges.right[row])
     }
 
     fn get_edge(&self, edge: Coord) -> Result<Deflection, PuzzleError> {
@@ -861,6 +863,14 @@ impl Puzzle {
         // check if the edges match the solution
         Ok(guess == self.edges)
     }
+}
+
+fn fmt_horizontal_edge(g: &GridSize, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "  +")?;
+    for col in 0..g.0 {
+        write!(f, "-")?;
+    }
+    writeln!(f, "+")
 }
 
 fn generate_edges(balls: &Balls, edge_rows: &mut EdgeRows) -> Result<(), PuzzleError> {
@@ -1038,11 +1048,11 @@ fn next_step(balls: &Balls, start: Point, dir: Coord) -> Result<Beam, PuzzleErro
 }
 
 fn format_edge_row(row: &EdgeRow, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    write!(f, "+")?;
+    write!(f, "   ")?;
     for cell in row {
         write!(f, "{}", cell)?
     }
-    write!(f, "+\n")
+    writeln!(f, "")
 }
 
 impl std::fmt::Display for Puzzle {
