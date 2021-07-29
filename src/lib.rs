@@ -786,6 +786,10 @@ impl Puzzle {
         self.add_ball(p, BallType::Solution)
     }
 
+    pub fn remove_ball_guess(&mut self, p: Point) -> Result<(), PuzzleError> {
+        self.guess.remove(p)
+    }
+
     pub fn get_solution(&self) -> PuzzleSolution {
         PuzzleSolution { puzzle: &self }
     }
