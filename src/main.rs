@@ -23,6 +23,19 @@ Commands:
     );
 }
 
+fn parse_point(s: &str) -> Option<Point> {
+    match s.parse::<Point>() {
+        Ok(p) => Some(p),
+        Err(e) => {
+            println!(
+                "Couldn't parse a point from \"{}\". Expected format is \"row col\". Error: {:?}",
+                s, e
+            );
+            None
+        }
+    }
+}
+
 fn main() {
     let size = 3;
     println!("Generating new puzzle of size {size}x{size}", size = size);
@@ -38,8 +51,12 @@ fn main() {
         let input = input.trim();
         if input.len() == 0 {
         } else if input.starts_with("remove ") {
-            // TODO: skip over command, parse point, attempt removal
-            println!("remove not yet implemented");
+            if let Some(p) = parse_point(&input["remove ".len()..]) {
+                match puzzle.remove_ball_guess(p) {
+                    Ok(_) => {}
+                    Err(e) => println!("Couldn't remove ball: {:?}", e),
+                }
+            }
         } else if input == "check" {
             match puzzle.check_guess() {
                 Ok(true) => {
@@ -50,7 +67,7 @@ fn main() {
                 Ok(false) => {
                     println!("Sorry, you are incorrect.\n");
                 }
-                Err(x) => println!("I'm very sorry - an error occurred. {:?}", x),
+                Err(e) => println!("I'm very sorry - an error occurred. {:?}", e),
             };
         } else if input == "clear" {
             puzzle.clear_guess();
@@ -58,18 +75,26 @@ fn main() {
             println!("Weakling!\n");
             println!("{}", puzzle.get_solution());
         } else if input.starts_with("add ") {
-            // TODO: skip over command, parse point, attempt adding
-            println!("add not yet implemented");
+            if let Some(p) = parse_point(&input["add ".len()..]) {
+                match puzzle.add_ball_guess(p) {
+                    Ok(_) => {}
+                    Err(e) => println!("Couldn't add ball: {:?}", e),
+                }
+            }
         } else if input.chars().nth(0).unwrap().is_ascii_digit() {
-            let p: Point = input.parse().unwrap();
-            puzzle.add_ball_guess(p).unwrap();
+            if let Some(p) = parse_point(input) {
+                match puzzle.add_ball_guess(p) {
+                    Ok(_) => {}
+                    Err(e) => println!("Couldn't add ball: {:?}", e),
+                }
+            }
         } else if input == "exit" || input == "quit" || input == "q" {
             break;
         } else {
             println!("Couldn't understand given command.");
             print_help();
         }
-        println!("{}", puzzle);
+        println!("\n{}", puzzle);
         prompt();
     }
 }
