@@ -38,16 +38,16 @@ fn parse_point(s: &str) -> Option<Point> {
     }
 }
 
-const size_arg: &str = "grid_size";
+const SIZE_ARG_NAME: &str = "grid_size";
 
 fn main() {
     // TODO implement versioning
     let matches = App::new("Light Box Puzzle")
         .author("James Stuart <james.stuart@ieee.org>")
-        .arg(Arg::with_name(size_arg).required(true))
+        .arg(Arg::with_name(SIZE_ARG_NAME).required(true))
         .get_matches();
 
-    let size = value_t!(matches, size_arg, usize).unwrap_or_else(|e| e.exit());
+    let size = value_t!(matches, SIZE_ARG_NAME, usize).unwrap_or_else(|e| e.exit());
 
     println!("Generating new puzzle of size {size}x{size}\n", size = size);
     let mut puzzle = match Puzzle::new(size) {

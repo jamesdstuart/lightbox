@@ -431,8 +431,8 @@ enum Deflection {
 impl Deflection {
     fn equivalent(&self, other: &Self) -> bool {
         match self {
-            Deflection::Through(x) => match other {
-                Deflection::Through(y) => true,
+            Deflection::Through(_) => match other {
+                Deflection::Through(_) => true,
                 _ => false,
             },
             _ => self == other,
@@ -701,8 +701,8 @@ impl Direction {
     }
 
     fn get_side_coords(&self, front: Coord) -> (Coord, Coord) {
-        let (dirLeft, dirRight) = self.get_sides();
-        (front + dirLeft, front + dirRight)
+        let (dir_left, dir_right) = self.get_sides();
+        (front + dir_left, front + dir_right)
     }
 
     fn reflect(self) -> Direction {
@@ -867,7 +867,7 @@ impl Puzzle {
 
 fn fmt_horizontal_edge(g: &GridSize, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "  +")?;
-    for col in 0..g.0 {
+    for _ in 0..g.0 {
         write!(f, "-")?;
     }
     writeln!(f, "+")
@@ -2238,7 +2238,7 @@ mod tests {
         got.add_ball_solution(Point(9, 8)).unwrap();
         got.generate_solution_edges().unwrap();
 
-        let mut expected = parse_grid(input, 10).unwrap();
+        let expected = parse_grid(input, 10).unwrap();
 
         assert_eq!(expected.edges, got.edges);
         assert_eq!(expected.solution, got.solution);
@@ -2398,7 +2398,7 @@ mod tests {
         let top = "  H6HR1H9ab8 ";
         let bottom = "  HRH6RH5423 ";
         let mut er = EdgeRows::new(GridSize::new(10).unwrap());
-        let topThroughs = vec![
+        let top_throughs = vec![
             ThroughHalf {
                 id: BeamId(6),
                 edge: Coord(-1, 1),
@@ -2424,7 +2424,7 @@ mod tests {
                 edge: Coord(-1, 9),
             },
         ];
-        let bottomThroughs = vec![
+        let bottom_throughs = vec![
             ThroughHalf {
                 id: BeamId(6),
                 edge: Coord(10, 3),
@@ -2447,11 +2447,11 @@ mod tests {
             },
         ];
         assert_eq!(
-            Some(topThroughs),
+            Some(top_throughs),
             parse_horizontal_edge_row(&mut er, Side::Top, top)
         );
         assert_eq!(
-            Some(bottomThroughs),
+            Some(bottom_throughs),
             parse_horizontal_edge_row(&mut er, Side::Bottom, bottom)
         );
 
