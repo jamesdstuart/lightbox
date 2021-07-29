@@ -1,6 +1,8 @@
 use lightbox::{Point, Puzzle};
 use std::io;
 use std::io::prelude::*;
+extern crate clap;
+use clap::{value_t, App, Arg};
 
 fn prompt() {
     print!("> ");
@@ -27,7 +29,7 @@ fn parse_point(s: &str) -> Option<Point> {
     match s.parse::<Point>() {
         Ok(p) => Some(p),
         Err(e) => {
-            println!(
+            eprintln!(
                 "Couldn't parse a point from \"{}\". Expected format is \"row col\". Error: {:?}",
                 s, e
             );
@@ -36,10 +38,25 @@ fn parse_point(s: &str) -> Option<Point> {
     }
 }
 
+const size_arg: &str = "grid_size";
+
 fn main() {
-    let size = 3;
-    println!("Generating new puzzle of size {size}x{size}", size = size);
-    let mut puzzle = Puzzle::new(size).unwrap();
+    // TODO implement versioning
+    let matches = App::new("Light Box Puzzle")
+        .author("James Stuart <james.stuart@ieee.org>")
+        .arg(Arg::with_name(size_arg).required(true))
+        .get_matches();
+
+    let size = value_t!(matches, size_arg, usize).unwrap_or_else(|e| e.exit());
+
+    println!("Generating new puzzle of size {size}x{size}\n", size = size);
+    let mut puzzle = match Puzzle::new(size) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Couldn't create new puzzle: {:?}", e);
+            std::process::exit(1);
+        }
+    };
 
     println!("{}", puzzle);
     print_help();
@@ -54,7 +71,7 @@ fn main() {
             if let Some(p) = parse_point(&input["remove ".len()..]) {
                 match puzzle.remove_ball_guess(p) {
                     Ok(_) => {}
-                    Err(e) => println!("Couldn't remove ball: {:?}", e),
+                    Err(e) => eprintln!("Couldn't remove ball: {:?}", e),
                 }
             }
         } else if input == "check" {
@@ -67,7 +84,7 @@ fn main() {
                 Ok(false) => {
                     println!("Sorry, you are incorrect.\n");
                 }
-                Err(e) => println!("I'm very sorry - an error occurred. {:?}", e),
+                Err(e) => eprintln!("I'm very sorry - an error occurred. {:?}", e),
             };
         } else if input == "clear" {
             puzzle.clear_guess();
@@ -78,14 +95,14 @@ fn main() {
             if let Some(p) = parse_point(&input["add ".len()..]) {
                 match puzzle.add_ball_guess(p) {
                     Ok(_) => {}
-                    Err(e) => println!("Couldn't add ball: {:?}", e),
+                    Err(e) => eprintln!("Couldn't add ball: {:?}", e),
                 }
             }
         } else if input.chars().nth(0).unwrap().is_ascii_digit() {
             if let Some(p) = parse_point(input) {
                 match puzzle.add_ball_guess(p) {
                     Ok(_) => {}
-                    Err(e) => println!("Couldn't add ball: {:?}", e),
+                    Err(e) => eprintln!("Couldn't add ball: {:?}", e),
                 }
             }
         } else if input == "exit" || input == "quit" || input == "q" {
