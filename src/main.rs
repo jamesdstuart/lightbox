@@ -2,7 +2,7 @@ use lightbox::{Point, Puzzle};
 use std::io;
 use std::io::prelude::*;
 extern crate clap;
-use clap::{value_t, App, Arg};
+use clap::{crate_authors, crate_description, crate_name, crate_version, value_t, App, Arg};
 
 fn prompt() {
     print!("> ");
@@ -41,9 +41,10 @@ fn parse_point(s: &str) -> Option<Point> {
 const SIZE_ARG_NAME: &str = "grid_size";
 
 fn main() {
-    // TODO implement versioning
-    let matches = App::new("Light Box Puzzle")
-        .author("James Stuart <james.stuart@ieee.org>")
+    let matches = App::new(crate_name!())
+        .author(crate_authors!("\n"))
+        .version(crate_version!())
+        .about(crate_description!())
         .arg(Arg::with_name(SIZE_ARG_NAME).required(true))
         .get_matches();
 
